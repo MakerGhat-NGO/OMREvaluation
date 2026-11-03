@@ -14,8 +14,11 @@ const canvasToJpeg = (canvas: HTMLCanvasElement) =>
   new Promise<Blob>((resolve, reject) =>
     canvas.toBlob(b => (b ? resolve(b) : reject(new Error('could not encode image'))), 'image/jpeg', JPEG_QUALITY));
 
-function greyCanvas(width: number, height: number) {
-  const scale = Math.min(1, TARGET_WIDTH / width);
+function greyCanvas(width: number, height: number, enlarge = false) {
+  // A photo is never enlarged: there is nothing more to see in it. A PDF page is drawn at whatever
+  // size is asked, so it is drawn at the full target width rather than at its nominal 72 dots per
+  // inch (about 540 px wide), which left the corner circles small and soft.
+  const scale = enlarge ? TARGET_WIDTH / width : Math.min(1, TARGET_WIDTH / width);
   const canvas = document.createElement('canvas');
   canvas.width = Math.round(width * scale);
   canvas.height = Math.round(height * scale);
@@ -29,7 +32,7 @@ async function* pdfPages(file: File): AsyncGenerator<PageImage> {
     for (let i = 1; i <= doc.numPages; i++) {
       const page = await doc.getPage(i);
       const base = page.getViewport({ scale: 1 });
-      const { canvas, scale } = greyCanvas(base.width, base.height);
+      const { canvas, scale } = greyCanvas(base.width, base.height, true);
       const viewport = page.getViewport({ scale });
       const ctx = canvas.getContext('2d')!;
       ctx.filter = 'grayscale(1)';

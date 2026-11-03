@@ -5,16 +5,16 @@ import csv
 import io
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, Response, abort, current_app, g, jsonify, request
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import selectinload
 from werkzeug.exceptions import HTTPException
 
 from omr import load_pages
 from .auth import require_admin, require_user
-from .models import Batch, Sheet, Test, User
+from .models import Batch, Sheet, State, Test, User, real_name
 
 api = Blueprint("api", __name__, url_prefix="/api")
 QUESTION_RE = re.compile(r"^q\d+$")
@@ -155,13 +155,52 @@ def update_test(test_id):
     return jsonify(t.to_dict())
 
 
+# ---- states ---------------------------------------------------------------------------
+
+def _clean_name(value) -> str:
+    """A typed name with its spaces tidied, at most 200 letters."""
+    return " ".join(str(value or "").split())[:200]
+
+
+@api.get("/states")
+@require_user
+def list_states():
+    return jsonify([s.to_dict() for s in db().query(State).order_by(State.name).all()])
+
+
+@api.post("/states")
+@require_user
+def create_state():
+    """Makes a state, or answers with the one of that name (whatever its capitals) if it exists:
+    two teachers typing "Maharashtra" get one state, not two."""
+    body = request.get_json(force=True) or {}
+    name = _clean_name(body.get("name"))
+    if not name:
+        abort(400, "state name is required")
+    if existing := _state_named(name):
+        return jsonify(existing.to_dict()), 200
+    s = State(name=name, created_by=g.user.email)
+    db().add(s)
+    try:
+        db().commit()
+    except IntegrityError:
+        # Made by someone else between the look and the save.
+        db().rollback()
+        return jsonify(_state_named(name).to_dict()), 200
+    return jsonify(s.to_dict()), 201
+
+
+def _state_named(name):
+    return next((s for s in db().query(State).all() if s.name.lower() == name.lower()), None)
+
+
 # ---- batches and sheets -----------------------------------------------------------
 
 # Batch.to_dict counts each batch's sheets and averages their scores. Load just those columns of the
 # sheets of every batch asked for, in one query (not one query per batch, and not the long text
-# columns), and their answer keys in one more.
+# columns), and their answer keys and states in one more each.
 _BATCH_COUNTS = (selectinload(Batch.sheets).load_only(Sheet.status, Sheet.needs_review, Sheet.score),
-                 selectinload(Batch.test))
+                 selectinload(Batch.test), selectinload(Batch.state))
 
 
 @api.get("/batches")
@@ -170,17 +209,32 @@ def list_batches():
     q = db().query(Batch).options(*_BATCH_COUNTS).order_by(Batch.created_at.desc())
     if request.args.get("test_id"):
         q = q.filter(Batch.test_id == request.args["test_id"])
+    if request.args.get("state_id"):
+        q = q.filter(Batch.state_id == request.args["state_id"])
     return jsonify([b.to_dict() for b in q.limit(200).all()])
 
 
 @api.post("/batches")
 @require_user
 def create_batch():
+    """Makes a batch for a test, filed under a state. A batch of that name (whatever its capitals)
+    for the same test and state is answered with instead of being made again: sheets can be added
+    to a batch at any time, and one batch per school and class is the point."""
     body = request.get_json(force=True) or {}
     test = db().get(Test, body.get("test_id") or "") or abort(400, "test_id is required")
     if not test.answer_key:
         abort(400, "this test has no answer key yet")
-    b = Batch(test_id=test.id, name=(body.get("name") or "").strip()[:200], created_by=g.user.email)
+    name = _clean_name(body.get("name"))
+    if not name:
+        abort(400, "batch name is required")
+    state = None
+    if body.get("state_id"):
+        state = db().get(State, body["state_id"]) or abort(400, "this state was not found")
+    same = (db().query(Batch).options(*_BATCH_COUNTS)
+            .filter(Batch.test_id == test.id, Batch.state_id == (state.id if state else None)).all())
+    if existing := next((b for b in same if b.name.lower() == name.lower()), None):
+        return jsonify(existing.to_dict()), 200
+    b = Batch(test_id=test.id, state_id=state.id if state else None, name=name, created_by=g.user.email)
     db().add(b)
     db().commit()
     return jsonify(b.to_dict()), 201
@@ -220,8 +274,9 @@ def upload_sheet(batch_id):
     """One request per scanned page. The browser normally sends a shrunk JPEG; a PDF also works
     and every page of it is read."""
     b = db().get(Batch, batch_id) or abort(404)
-    if b.status != "open":
-        abort(400, "this batch is finished")
+    # Sheets can be added to a batch at any time: a new run of checking opens it again, and its
+    # finish call closes it.
+    b.status = "open"
     f = request.files.get("file") or abort(400, "file is required")
     data = f.read()
     if not data:
@@ -253,7 +308,7 @@ def upload_sheet(batch_id):
         if retry and (saved := _saved_sheet(b.id, source_name, page_no)):
             results.append(saved)
             continue
-        sheet = Sheet(batch_id=b.id, source_name=source_name, page_no=page_no,
+        sheet = Sheet(batch_id=b.id, source_name=source_name, page_no=page_no, created_by=g.user.email,
                       status="ok" if r.ok else "error", error_reason=r.error_reason,
                       score=r.score, needs_review=r.needs_review, review_reason=r.review_reason)
         sheet.fields_json = json.dumps(r.fields)
@@ -333,23 +388,116 @@ def sheet_layout(sheet_id):
     return Response(data, mimetype="application/json", headers={"Cache-Control": "private, max-age=3600"})
 
 
+# ---- results for Google Sheets and Excel ------------------------------------------------
+
+# The columns of the sheet the field team keeps results in (the "OMR format"), in its order. The
+# tool fills in what it knows from the batch and the scan; District, Block, Cluster, the date of
+# the assessment, the school, the grade and the hands-on score are written on the sheet by hand or
+# known to the team, so those columns are left empty for them to fill in.
+EXPORT_COLUMNS = ["Sr No", "State", "District", "Block", "Cluster (if get)", "Date of assessment",
+                  "Date of data entry", "Fellow/Team Member Name", "School Name", "Student Name",
+                  "Roll number", "Mobile Number", "Gender", "Grade", "Hand-on Activity Score",
+                  "Assessment Score"]
+# After the questions: what the tool found that a person should know.
+EXPORT_EXTRA = ["Needs a check", "Reason", "Scan file"]
+INDIA = timezone(timedelta(hours=5, minutes=30))
+
+
+def _scan_label(s: Sheet) -> str:
+    """"class7.pdf, page 3", or the photo's name (as the app shows it)."""
+    if s.source_name.lower().endswith(".pdf") or s.page_no > 1:
+        return f"{s.source_name}, page {s.page_no}"
+    return s.source_name
+
+
+def _export_rows(b: Batch):
+    """The header and one row per sheet, as values: dates as dates, scores as numbers, and the roll
+    and mobile numbers as text so that a roll number "03" keeps its zero."""
+    qlabels = [f"q{i}" for i in range(1, b.test.question_count + 1)]
+    names = {u.email: real_name(u.name) for u in db().query(User).all()}
+    state = b.state.name if b.state else ""
+
+    def person(email):
+        email = email or b.created_by or ""
+        return names.get(email) or email.split("@")[0]
+
+    rows = []
+    for n, s in enumerate(sorted(b.sheets, key=lambda s: (s.source_name, s.page_no)), start=1):
+        f, a = s.fields, s.answers
+        checked = s.created_at or b.created_at
+        entered = (checked if checked.tzinfo else checked.replace(tzinfo=timezone.utc)).astimezone(INDIA).date()
+        rows.append([n, state, "", "", "", "", entered, person(s.created_by), "",
+                     (f.get("Name") or "").strip().title(), (f.get("Roll Number") or "").strip(),
+                     (f.get("Mobile Number") or "").strip(), (f.get("gender") or "").strip(), "", "",
+                     "" if s.score is None else s.score]
+                    + [a.get(k, "") for k in qlabels]
+                    + ["yes" if s.needs_review or s.status == "error" else "",
+                       s.error_reason or s.review_reason, _scan_label(s)])
+    return EXPORT_COLUMNS + qlabels + EXPORT_EXTRA, rows
+
+
+def _export_name(b: Batch, ext: str) -> str:
+    parts = [b.state.name if b.state else "", b.name, b.test.name, f"{b.created_at:%Y-%m-%d}"]
+    return (re.sub(r"[^A-Za-z0-9_-]+", "_", "_".join(p for p in parts if p)).strip("_") or "results") + ext
+
+
+def _plain(value):
+    """A value as CSV text: a date as 2026-11-03, a whole-number score without ".0"."""
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
 @api.get("/batches/<batch_id>/results.csv")
 @require_user
 def results_csv(batch_id):
-    b = db().get(Batch, batch_id) or abort(404)
-    qlabels = [f"q{i}" for i in range(1, b.test.question_count + 1)]
-    flabels = engine().field_labels
+    b = db().get(Batch, batch_id, options=_BATCH_COUNTS) or abort(404)
+    header, rows = _export_rows(b)
     out = io.StringIO()
     w = csv.writer(out)
-    w.writerow(["file", "page", "status", "needs_review", "reason", "score"] + flabels + qlabels)
-    for s in sorted(b.sheets, key=lambda s: (s.source_name, s.page_no)):
-        f, a = s.fields, s.answers
-        w.writerow([s.source_name, s.page_no, s.status, "yes" if s.needs_review else "",
-                    s.error_reason or s.review_reason, "" if s.score is None else s.score]
-                   + [f.get(k, "") for k in flabels] + [a.get(k, "") for k in qlabels])
-    fname = re.sub(r"[^A-Za-z0-9_-]+", "_", f"{b.test.name}_{b.created_at:%Y-%m-%d}") + ".csv"
-    return Response(out.getvalue(), mimetype="text/csv",
-                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+    w.writerow(header)
+    for row in rows:
+        w.writerow([_plain(v) for v in row])
+    # The byte-order mark makes Excel read the file as UTF-8, so Marathi names come out right.
+    return Response("\ufeff" + out.getvalue(), mimetype="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="{_export_name(b, ".csv")}"'})
+
+
+@api.get("/batches/<batch_id>/results.xlsx")
+@require_user
+def results_xlsx(batch_id):
+    """The same rows as a workbook: Google Sheets and Excel open it with the headings in bold, the
+    roll numbers kept as written, and the dates as dates."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+
+    b = db().get(Batch, batch_id, options=_BATCH_COUNTS) or abort(404)
+    header, rows = _export_rows(b)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Results"
+    ws.append(header)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    for row in rows:
+        ws.append(row)
+    date_column = header.index("Date of data entry") + 1
+    for row_no in range(2, len(rows) + 2):
+        ws.cell(row=row_no, column=date_column).number_format = "DD-MM-YYYY"
+    widths = {"Sr No": 7, "State": 16, "District": 14, "Block": 14, "Cluster (if get)": 16, "Date of assessment": 18,
+              "Date of data entry": 18, "Fellow/Team Member Name": 26, "School Name": 28, "Student Name": 28,
+              "Roll number": 13, "Mobile Number": 15, "Gender": 10, "Grade": 8, "Hand-on Activity Score": 20,
+              "Assessment Score": 17, "Needs a check": 14, "Reason": 44, "Scan file": 32}
+    for i, title in enumerate(header, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = widths.get(title, 6)
+    ws.freeze_panes = "A2"
+    out = io.BytesIO()
+    wb.save(out)
+    return Response(out.getvalue(), mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="{_export_name(b, ".xlsx")}"'})
 
 
 # ---- errors as JSON -----------------------------------------------------------------

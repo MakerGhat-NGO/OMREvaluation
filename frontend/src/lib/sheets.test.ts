@@ -5,7 +5,7 @@ const sheet = (over: Partial<Sheet> = {}): Sheet => ({
   id: 's1', batch_id: 'b1', source_name: 'class7.pdf', page_no: 2, status: 'ok', error_reason: '',
   fields: { Name: 'RAHUL  DESAI', 'Roll Number': '2302', 'Mobile Number': '9876500012', gender: 'Male' },
   answers: { q1: 'A', q15: 'CD', q20: '' }, score: 38, needs_review: false, review_reason: '',
-  has_checked_image: true, created_at: '2026-10-28T10:00:00Z', ...over,
+  has_checked_image: true, created_at: '2026-10-28T10:00:00Z', created_by: 'asha@example.org', ...over,
 });
 
 describe('sheet kinds and names', () => {
@@ -15,8 +15,10 @@ describe('sheet kinds and names', () => {
     expect(sheetKind(sheet({ status: 'error' }))).toBe('error');
   });
 
-  test('names are shown in normal capitals, else the file and page', () => {
+  test('names are shown in normal capitals, else the roll number, else the file and page', () => {
     expect(studentName(sheet())).toBe('Rahul Desai');
+    expect(sheetTitle(sheet())).toBe('Rahul Desai');
+    expect(sheetTitle(sheet({ fields: { Name: '', 'Roll Number': '2302' } }))).toBe('Roll 2302');
     expect(sheetTitle(sheet({ fields: { Name: '' } }))).toBe('class7.pdf, page 2');
     expect(sourceLabel(sheet({ source_name: 'IMG_1.jpg', page_no: 1 }))).toBe('IMG_1.jpg');
   });
@@ -64,6 +66,29 @@ describe('problems a teacher should look at', () => {
     expect(p.map(x => x.short)).toEqual(['name or number', 'roll no.']);
     expect(p[1].boxes).toEqual(['Roll Number']);
     expect(checkSummary(p)).toBe('Check name or number, roll no.');
+  });
+
+  test('a double in a name or number column names the field', () => {
+    const p = problemsOf(sheet({
+      needs_review: true, answers: { q1: 'A' },
+      review_reason: 'two bubbles filled in a column of the mobile number; both gender bubbles filled; two bubbles filled in a column of the name',
+    }), 25);
+    expect(p.map(x => x.short)).toEqual(['mobile no.', 'gender', 'name']);
+    expect(p[0].text).toBe('Two bubbles are filled in one column of the mobile number, so a digit may be wrong.');
+    expect(p[0].boxes).toEqual(['Mobile Number']);
+    expect(p[1].boxes).toEqual(['gender']);
+    expect(p[2].text).toBe('Two bubbles are filled in one column of the name, so a letter may be wrong.');
+    expect(checkSummary(p)).toBe('Check mobile no., gender and 1 more');
+  });
+
+  test('a mobile number with missing digits is flagged', () => {
+    const p = problemsOf(sheet({ needs_review: true, answers: { q1: 'A' }, review_reason: 'mobile number has 9 digits, not 10' }), 25);
+    expect(p).toEqual([{
+      text: 'The mobile number has 9 digits, not 10. A column may have been skipped, or a mark may be stray.',
+      boxes: ['Mobile Number'], short: 'mobile no.',
+    }]);
+    expect(problemsOf(sheet({ needs_review: true, answers: {}, review_reason: 'mobile number has 1 digit, not 10' }), 25)[0].text)
+      .toBe('The mobile number has 1 digit, not 10. A column may have been skipped, or a mark may be stray.');
   });
 
   test('many problems are summarised', () => {

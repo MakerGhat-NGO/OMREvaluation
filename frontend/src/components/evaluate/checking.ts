@@ -4,7 +4,9 @@
 import { api, ApiError, Batch, Sheet } from '../../lib/api';
 import { PageImage, pagesOf } from '../../lib/pages';
 import { sheetKind } from '../../lib/sheets';
-import { CheckRun, countsDone, expectedPages, getSession, isCounting, ScanFile, updateSession } from './session';
+import {
+  batchChosen, CheckRun, countsDone, expectedPages, getSession, isCounting, NEW_BATCH, ScanFile, updateSession,
+} from './session';
 
 const TRIES = 4;
 const WAITING_TEXT = 'Waiting for the internet connection to come back…';
@@ -240,11 +242,12 @@ function keepScreenOn(): () => void {
 
 // ---- the run ---------------------------------------------------------------------------------
 
-/** Checks every file in the list against the test. Resolves when checking has finished, or when
- *  the batch could not be made (then the session's startError says why). */
+/** Checks every file in the list against the test, into the chosen batch. Resolves when checking
+ *  has finished, or when a new batch could not be made (then the session's startError says why). */
 export async function startChecking(testId: string): Promise<void> {
-  const { files, batchName, run } = getSession();
-  if (run || files.length === 0 || !testId) return;
+  const session = getSession();
+  const { files, stateId, batchId, newBatchName, run } = session;
+  if (run || files.length === 0 || !testId || !batchChosen(session)) return;
 
   const progress: CheckRun = {
     phase: 'starting', batchId: '', total: 0, done: 0, fine: 0, check: 0, bad: 0, now: 'Getting ready…', problems: [],
@@ -253,12 +256,18 @@ export async function startChecking(testId: string): Promise<void> {
   updateSession({ testId, startError: '' });
   publish();
 
-  const batch = await api.post<Batch>('/api/batches', { test_id: testId, name: batchName.trim() })
-    .catch((e: unknown) => {
-      updateSession({ run: null, startError: `Could not start checking: ${withFullStop(reasonText(e))}` });
-      return null;
-    });
-  if (!batch) return;
+  // A batch chosen from the list is used as it is. A new one is made now, and stays chosen, so the
+  // next sheets ("Check more sheets") go into it too.
+  let batch: Pick<Batch, 'id'> | null = batchId === NEW_BATCH ? null : { id: batchId };
+  if (!batch) {
+    batch = await api.post<Batch>('/api/batches', { test_id: testId, state_id: stateId || null, name: newBatchName.trim() })
+      .catch((e: unknown) => {
+        updateSession({ run: null, startError: `Could not start checking: ${withFullStop(reasonText(e))}` });
+        return null;
+      });
+    if (!batch) return;
+    updateSession({ batchId: batch.id, newBatchName: '' });
+  }
 
   progress.batchId = batch.id;
   window.addEventListener('beforeunload', warnBeforeLeaving);

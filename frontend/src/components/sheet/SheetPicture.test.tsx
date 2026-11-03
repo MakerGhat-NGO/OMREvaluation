@@ -7,7 +7,7 @@ import SheetPicture, { PictureKind } from './SheetPicture';
 const sheet: Sheet = {
   id: 's1', batch_id: 'b1', source_name: 'class7.pdf', page_no: 1, status: 'ok', error_reason: '',
   fields: { Name: 'RAHUL DESAI' }, answers: { q40: 'B' }, score: 30, needs_review: false, review_reason: '',
-  has_checked_image: true, created_at: '',
+  has_checked_image: true, created_at: '', created_by: '',
 };
 const layout: SheetLayout = { boxes: { q40: [0.5, 0.8, 0.55, 0.82] } };
 

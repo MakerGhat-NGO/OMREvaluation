@@ -17,3 +17,5 @@ PyMuPDF>=1.24
 azure-storage-blob>=12.20
 azure-identity>=1.17
 pyodbc>=5.1
+# Results as a workbook for Google Sheets and Excel
+openpyxl>=3.1

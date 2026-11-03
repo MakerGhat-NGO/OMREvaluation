@@ -314,6 +314,7 @@ function BatchResults({ id, me }: { id: string; me: Me }) {
   // The server's figure, so this line and the Results list round the same way.
   const average = batch.average_score;
   const summary = [
+    batch.state_name || '',
     batch.name ? batch.test_name || test.name : '', // otherwise the title already names the test
     friendlyDate(batch.created_at),
     plural(all.length, 'sheet'),
@@ -394,8 +395,9 @@ function BatchResults({ id, me }: { id: string; me: Me }) {
                     const kind = sheetKind(s);
                     const isOpen = open?.id === s.id;
                     const roll = rollNumber(s);
-                    // No roll number: say where the sheet came from, unless the title already does.
-                    const where = roll ? `Roll ${roll}` : studentName(s) ? sourceLabel(s) : '';
+                    // The line under the title says what the title does not: the roll number under a
+                    // name, the file under a roll number, nothing under a file.
+                    const where = studentName(s) ? (roll ? `Roll ${roll}` : sourceLabel(s)) : roll ? sourceLabel(s) : '';
                     const status = kind === 'fine' ? 'Read fine'
                       : kind === 'check' ? checkSummary(problems.get(s.id) || []) : 'Could not read';
                     const badge = kind === 'error' ? '!' : fmtScore(s.score);
@@ -440,11 +442,14 @@ function BatchResults({ id, me }: { id: string; me: Me }) {
               )}
 
               <div className="flex flex-col gap-1.5 pt-1">
-                <a href={`/api/batches/${batch.id}/results.csv`} className="btn btn-primary w-full">
+                <a href={`/api/batches/${batch.id}/results.xlsx`} className="btn btn-primary w-full">
                   <IconDownload />
-                  Download for Excel
+                  Download for Google Sheets
                 </a>
-                <p className="hint text-center">Opens in Excel or Google Sheets: one row per student.</p>
+                <p className="hint text-center">
+                  One row per student, in the OMR format the team enters results in. Opens in Google Sheets or Excel.{' '}
+                  <a href={`/api/batches/${batch.id}/results.csv`} className="link whitespace-nowrap">CSV file instead</a>
+                </p>
               </div>
             </>
           )}
@@ -462,15 +467,15 @@ function BatchResults({ id, me }: { id: string; me: Me }) {
 
         {wide && open && place && (
           <div className="min-w-0 flex-1 self-start lg:sticky lg:top-6">
-            <SheetViewer mode="panel" sheet={open} test={test} maxScore={maxScore} {...place} layouts={layouts}
-              onPrev={goPrev} onNext={goNext} />
+            <SheetViewer mode="panel" sheet={open} test={test} batch={batch} me={me} maxScore={maxScore} {...place}
+              layouts={layouts} onPrev={goPrev} onNext={goNext} />
           </div>
         )}
       </div>
 
       {!wide && open && place && (
-        <SheetViewer mode="screen" sheet={open} test={test} maxScore={maxScore} {...place} layouts={layouts}
-          onPrev={goPrev} onNext={goNext} onClose={close} />
+        <SheetViewer mode="screen" sheet={open} test={test} batch={batch} me={me} maxScore={maxScore} {...place}
+          layouts={layouts} onPrev={goPrev} onNext={goNext} onClose={close} />
       )}
     </div>
   );

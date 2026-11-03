@@ -1,4 +1,4 @@
-// What the "Check sheets" screen holds: the chosen test, the batch name, the chosen files and the
+// What the "Check sheets" screen holds: the chosen test, state and batch, the chosen files and the
 // checking run. It lives outside React on purpose. Moving to another tab of the app and back keeps
 // the files a teacher picked (often photos taken one by one) and shows the checking, which keeps
 // going meanwhile: it runs in this browser tab, not in the screen.
@@ -37,7 +37,12 @@ export interface CheckRun {
 
 export interface Session {
   testId: string;
-  batchName: string;
+  /** The state the sheets are filed under (a state's id), or '' while none is chosen. */
+  stateId: string;
+  /** The batch the sheets go into: a batch's id, NEW_BATCH for one to be made when checking starts, or ''. */
+  batchId: string;
+  /** The name of the batch to make, while batchId is NEW_BATCH. */
+  newBatchName: string;
   files: ScanFile[];
   /** The checking run; null until "Check sheets" is pressed, and again after "Check more sheets". */
   run: CheckRun | null;
@@ -45,7 +50,7 @@ export interface Session {
   startError: string;
 }
 
-let session: Session = { testId: '', batchName: '', files: [], run: null, startError: '' };
+let session: Session = { testId: '', stateId: '', batchId: '', newBatchName: '', files: [], run: null, startError: '' };
 const listeners = new Set<() => void>();
 
 export const getSession = () => session;
@@ -65,8 +70,20 @@ function subscribe(listener: () => void) {
 /** The screen's state; the component re-renders whenever it changes. */
 export const useSession = () => useSyncExternalStore(subscribe, getSession);
 
-export const setTestId = (testId: string) => updateSession({ testId });
-export const setBatchName = (batchName: string) => updateSession({ batchName });
+/** The batchId of a batch still to be made (see newBatchName). */
+export const NEW_BATCH = 'new';
+
+// Batches belong to one test and one state, so another test or state starts the batch choice over.
+export const setTestId = (testId: string) =>
+  updateSession(current => (current.testId === testId ? {} : { testId, batchId: '', newBatchName: '' }));
+export const setStateId = (stateId: string) =>
+  updateSession(current => (current.stateId === stateId ? {} : { stateId, batchId: '', newBatchName: '' }));
+export const setBatchId = (batchId: string) => updateSession({ batchId, newBatchName: '' });
+export const setNewBatch = (name: string) => updateSession({ batchId: NEW_BATCH, newBatchName: name });
+
+/** True when the sheets have somewhere to go: a batch is chosen, or a new one has a name. */
+export const batchChosen = (s: Session) =>
+  (s.batchId === NEW_BATCH ? s.newBatchName.trim() !== '' : s.batchId !== '');
 
 /** Sheets a file stands for while checking. A file that could not be opened counts as one sheet that
  *  could not be read, so it shows in the "could not read" tile. */
@@ -170,10 +187,11 @@ export function removeAllFiles() {
   updateSession({ files: [] });
 }
 
-/** "Check more sheets": an empty list and no batch name, with the same test still chosen. */
+/** "Check more sheets": an empty list, with the same test, state and batch still chosen, so the next
+ *  sheets go into the same batch unless the teacher picks another. */
 export function startOver() {
   if (session.run && session.run.phase !== 'finished') return;
-  updateSession({ files: [], batchName: '', run: null, startError: '' });
+  updateSession({ files: [], run: null, startError: '' });
 }
 
 // ---- counting PDF pages ----------------------------------------------------------------------

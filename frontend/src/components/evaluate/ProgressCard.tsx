@@ -64,7 +64,7 @@ export default function ProgressCard({ run, onCheckMore, titleRef }: {
             // Photos taken with the camera button are often not kept on the phone: those sheets need new photos.
             <p className="m-0 mt-2">
               These pages are not in the results. To check them, press “Check more sheets”, then add those files again
-              or take new photos of those sheets. They are checked as a new batch.
+              or take new photos of those sheets. They go into the same batch.
             </p>
           )}
         </Notice>

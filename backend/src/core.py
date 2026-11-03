@@ -134,7 +134,9 @@ class ImageInstanceOps:
             # Note: Plotting takes Significant times here --> Change Plotting args
             # to support show_image_level
             # , "Mean Intensity Histogram",plot_show=True, sort_in_plot=True)
-            global_thr, _, _ = self.get_global_threshold(all_q_vals, looseness=4)
+            global_thr, _, _ = self.get_global_threshold(
+                all_q_vals, looseness=4, max_dark_fraction=constants.MAX_FILLED_FRACTION
+            )
 
             logger.info(
                 f"Thresholding:\tglobal_thr: {round(global_thr, 2)} \tglobal_std_THR: {round(global_std_thresh, 2)}\t{'(Looks like a Xeroxed OMR)' if (global_thr == 255) else ''}"
@@ -388,8 +390,16 @@ class ImageInstanceOps:
         plot_show=True,
         sort_in_plot=True,
         looseness=1,
+        max_dark_fraction=None,
     ):
         """
+        max_dark_fraction: when given, the threshold may leave at most this share of the
+        values below it. For the bubble intensities only a small share of the bubbles on a
+        page can be filled, so the biggest jump among the brightest values (a few windows
+        on blank paper, say, at an edge of the scan) is never the line between filled and
+        empty: taken as the threshold it would count every bubble on the page as filled.
+
+        Note: Cannot assume qStrip has only-gray or only-white bg
         Note: Cannot assume qStrip has only-gray or only-white bg
             (in which case there is only one jump).
         So there will be either 1 or 2 jumps.
@@ -436,6 +446,8 @@ class ImageInstanceOps:
         # Find the FIRST LARGE GAP and set it as threshold:
         ls = (looseness + 1) // 2
         l = len(q_vals) - ls
+        if max_dark_fraction is not None:
+            l = min(l, int(len(q_vals) * max_dark_fraction) + ls)
         max1, thr1 = MIN_JUMP, global_default_threshold
         for i in range(ls, l):
             jump = q_vals[i + ls] - q_vals[i - ls]
@@ -560,9 +572,11 @@ class ImageInstanceOps:
                 if no_outliers:
                     # All Black or All White case
                     thr1 = global_thr
-                else:
-                    # TODO: Low confidence parameters here
-                    pass
+                elif thr1 == 255:
+                    # No jump at all, only a spread of values (a strip in uneven light, say).
+                    # Left at 255 the threshold would count every bubble in the strip as
+                    # filled; the page's threshold marks the dark ones at most.
+                    thr1 = global_thr
 
             # if(thr1 == 255):
             #     print("Warning: threshold is unexpectedly 255! (Outlier Delta issue?)",plot_title)

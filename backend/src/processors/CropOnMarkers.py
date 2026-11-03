@@ -6,6 +6,7 @@ from pathlib import Path
 
 from src.logger import logger
 from src.processors.interfaces.ImagePreprocessor import ImagePreprocessor
+from omr.markers import corners_fit
 from src.utils.image import ImageUtils
 
 
@@ -72,47 +73,40 @@ class CropOnMarkers(ImagePreprocessor):
         centres = []
         sum_t, max_t = 0, 0
         quarter_match_log = "Matching Marker:  "
+        matches = []   # per quad: (score, top-left corner of the best match)
         for k in range(0, 4):
             res = cv2.matchTemplate(quads[k], optimal_marker, cv2.TM_CCOEFF_NORMED)
-            max_t = res.max()
+            max_t = float(res.max())
             quarter_match_log += f"Quarter{str(k + 1)}: {str(round(max_t, 3))}\t"
-            if (
-                max_t < self.min_matching_threshold
-                or abs(all_max_t - max_t) >= self.max_matching_variation
-            ):
-                logger.error(
-                    file_path,
-                    "\nError: No circle found in Quad",
-                    k + 1,
-                    "\n\t min_matching_threshold",
-                    self.min_matching_threshold,
-                    "\t max_matching_variation",
-                    self.max_matching_variation,
-                    "\t max_t",
-                    max_t,
-                    "\t all_max_t",
-                    all_max_t,
-                )
-                # if config.outputs.show_image_level >= 1:
-                #     InteractionUtils.show(
-                #         f"No markers: {file_path}",
-                #         image_eroded_sub,
-                #         0,
-                #         config=config,
-                #     )
-                #     InteractionUtils.show(
-                #         f"res_Q{str(k + 1)} ({str(max_t)})",
-                #         res,
-                #         1,
-                #         config=config,
-                #     )
-                return None
-
-            pt = np.argwhere(res == max_t)[0]
-            pt = [pt[1], pt[0]]
-            pt[0] += origins[k][0]
-            pt[1] += origins[k][1]
-            # print(">>",pt)
+            pt = np.argwhere(res == res.max())[0]
+            matches.append((max_t, [int(pt[1]) + origins[k][0], int(pt[0]) + origins[k][1]]))
+        centres = [[pt[0] + w / 2, pt[1] + _h / 2] for _, pt in matches]
+        missing = [k + 1 for k, (max_t, _) in enumerate(matches) if max_t < self.min_matching_threshold]
+        weak = [
+            k + 1
+            for k, (max_t, _) in enumerate(matches)
+            if abs(all_max_t - max_t) >= self.max_matching_variation
+        ]
+        if missing or (weak and not corners_fit(centres)):
+            weak = missing or weak
+            max_t = matches[weak[0] - 1][0]
+            logger.error(
+                file_path,
+                "\nError: No circle found in Quad",
+                weak[0],
+                "\n\t min_matching_threshold",
+                self.min_matching_threshold,
+                "\t max_matching_variation",
+                self.max_matching_variation,
+                "\t max_t",
+                max_t,
+                "\t all_max_t",
+                all_max_t,
+            )
+            return None
+        if weak:
+            logger.info(f"Faint corner marker in quad {weak}: kept, the four centres fit a sheet")
+        for max_t, pt in matches:
             image = cv2.rectangle(
                 image, tuple(pt), (pt[0] + w, pt[1] + _h), (150, 150, 150), 2
             )
@@ -124,7 +118,6 @@ class CropOnMarkers(ImagePreprocessor):
                 (50, 50, 50) if self.apply_erode_subtract else (155, 155, 155),
                 4,
             )
-            centres.append([pt[0] + w / 2, pt[1] + _h / 2])
             sum_t += max_t
 
         logger.info(quarter_match_log)

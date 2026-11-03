@@ -1,7 +1,7 @@
 import { api, ApiError, Sheet } from '../../lib/api';
 import { countPages, pagesOf } from '../../lib/pages';
 import { reasonText, startChecking } from './checking';
-import { addFiles, countsDone, getSession, removeFile, sheetTotals, startOver, updateSession } from './session';
+import { addFiles, countsDone, getSession, NEW_BATCH, removeFile, sheetTotals, startOver, updateSession } from './session';
 
 // pdf.js does not run in the test browser, and nothing here should reach a server.
 jest.mock('../../lib/pages', () => ({
@@ -25,7 +25,7 @@ const file = (name: string, size = 10, lastModified = 1, type = '') =>
 const sheet = (source: string, page: number, status: 'ok' | 'error', needsReview = false): Sheet => ({
   id: `${source}-${page}`, batch_id: 'b1', source_name: source, page_no: page, status, error_reason: '',
   fields: {}, answers: {}, score: status === 'ok' ? 10 : null, needs_review: needsReview, review_reason: '',
-  has_checked_image: status === 'ok', created_at: '',
+  has_checked_image: status === 'ok', created_at: '', created_by: '',
 });
 
 const allCounted = () => countsDone(getSession().files.map(f => f.key));
@@ -43,8 +43,9 @@ const onePagePerFile = () => {
   mockPost.mockImplementation(async (url: string) => (url === '/api/batches' ? { id: 'b1' } : {}));
 };
 
+// Most tests check into a batch that exists (b1, under state s1).
 beforeEach(() => {
-  updateSession({ testId: '', batchName: '', files: [], run: null, startError: '' });
+  updateSession({ testId: '', stateId: 's1', batchId: 'b1', newBatchName: '', files: [], run: null, startError: '' });
 });
 
 test('adds files once, renames photos that share a name and skips what it cannot check', async () => {
@@ -126,10 +127,11 @@ test('checks every page one at a time, counts the tiles, and always finishes the
   });
 
   addFiles([file('d.pdf'), file('c.pdf'), file('b.jpg'), file('a.pdf')]);
-  updateSession({ batchName: '  ZP School  ' });
+  // A new batch, named on the screen: it is made when checking starts.
+  updateSession({ batchId: NEW_BATCH, newBatchName: '  ZP School  ' });
   await startChecking('t1'); // pages are still being counted: checking waits for them
 
-  expect(mockPost).toHaveBeenCalledWith('/api/batches', { test_id: 't1', name: 'ZP School' });
+  expect(mockPost).toHaveBeenCalledWith('/api/batches', { test_id: 't1', state_id: 's1', name: 'ZP School' });
   expect(mockUpload).toHaveBeenCalledTimes(5);
   const firstForm = mockUpload.mock.calls[0][1] as FormData;
   expect(mockUpload.mock.calls[0][0]).toBe('/api/batches/b1/sheets');
@@ -150,9 +152,9 @@ test('checks every page one at a time, counts the tiles, and always finishes the
   removeFile(getSession().files[0].key);
   expect(getSession().files).toHaveLength(4);
 
-  // "Check more sheets" keeps the test and clears the rest.
+  // "Check more sheets" keeps the test, the state and the batch just made, and clears the rest.
   startOver();
-  expect(getSession()).toMatchObject({ testId: 't1', batchName: '', files: [], run: null, startError: '' });
+  expect(getSession()).toMatchObject({ testId: 't1', stateId: 's1', batchId: 'b1', newBatchName: '', files: [], run: null, startError: '' });
 });
 
 test('while the device is offline it waits for the connection and loses no pages', async () => {
@@ -340,11 +342,34 @@ test('when the sign-in runs out, checking stops and says so once', async () => {
 test('when the batch cannot be made, it says why and sends nothing', async () => {
   mockPost.mockRejectedValue(new ApiError(400, 'this test has no answer key yet'));
   addFiles([file('a.jpg')]);
+  updateSession({ batchId: NEW_BATCH, newBatchName: 'ZP School' });
   await startChecking('t1');
   expect(getSession().run).toBeNull();
   expect(getSession().startError).toBe('Could not start checking: this test has no answer key yet.');
   expect(mockUpload).not.toHaveBeenCalled();
   expect(getSession().files).toHaveLength(1);
+  // The name stays, for another try.
+  expect(getSession()).toMatchObject({ batchId: NEW_BATCH, newBatchName: 'ZP School' });
+});
+
+test('without a batch to put the sheets in, nothing is sent', async () => {
+  onePagePerFile();
+  addFiles([file('a.jpg')]);
+  updateSession({ batchId: '' });
+  await startChecking('t1');
+  expect(getSession().run).toBeNull();
+  expect(mockPost).not.toHaveBeenCalled();
+  expect(mockUpload).not.toHaveBeenCalled();
+});
+
+test('a batch chosen from the list is used as it is', async () => {
+  onePagePerFile();
+  mockUpload.mockImplementation(async (url: string, form: FormData) => [sheet(String(form.get('source_name')), 1, 'ok')]);
+  addFiles([file('a.jpg')]);
+  await startChecking('t1');
+  expect(mockPost).not.toHaveBeenCalledWith('/api/batches', expect.anything());
+  expect(mockUpload).toHaveBeenCalledWith('/api/batches/b1/sheets', expect.any(FormData));
+  expect(getSession().run).toMatchObject({ phase: 'finished', batchId: 'b1', done: 1, fine: 1 });
 });
 
 // Keep this test last: once a page goes through while the device says it is offline, the checking

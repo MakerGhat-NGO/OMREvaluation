@@ -1,5 +1,8 @@
 import csv
 import io
+from datetime import datetime, timezone
+
+from server.api import INDIA
 
 from .conftest import ADMIN, FIXTURES, TEACHER, key_dict, principal_header
 
@@ -11,8 +14,15 @@ def make_test(client, headers=ADMIN, **over):
     return r.json
 
 
-def make_batch(client, test_id, headers=ADMIN):
-    r = client.post("/api/batches", json={"test_id": test_id, "name": "Class 7A"}, headers=headers)
+def make_state(client, name="Maharashtra", headers=ADMIN):
+    r = client.post("/api/states", json={"name": name}, headers=headers)
+    assert r.status_code in (200, 201), r.json
+    return r.json
+
+
+def make_batch(client, test_id, headers=ADMIN, name="Class 7A", state_id=None):
+    state_id = state_id or make_state(client, headers=headers)["id"]
+    r = client.post("/api/batches", json={"test_id": test_id, "state_id": state_id, "name": name}, headers=headers)
     assert r.status_code == 201, r.json
     return r.json
 
@@ -134,16 +144,124 @@ def test_batch_counts_csv_and_marks_scheme(client):
     assert batch["average_score"] == round(sum(s["score"] for s in sheets) / 2, 1)
     assert batch["max_score"] == 50
 
+    # The CSV is in the field team's own format: their headings, one row per student, UTF-8 with a
+    # byte-order mark so Excel reads Marathi names right.
     r = client.get(f"/api/batches/{b['id']}/results.csv", headers=ADMIN)
     assert r.status_code == 200 and r.mimetype == "text/csv"
-    rows = list(csv.reader(io.StringIO(r.data.decode())))
-    assert rows[0][:6] == ["file", "page", "status", "needs_review", "reason", "score"]
-    assert "q50" in rows[0] and len(rows) == 3
+    assert r.data.startswith("\ufeff".encode("utf-8"))
+    rows = list(csv.reader(io.StringIO(r.data.decode("utf-8-sig"))))
+    assert rows[0][:10] == ["Sr No", "State", "District", "Block", "Cluster (if get)", "Date of assessment",
+                            "Date of data entry", "Fellow/Team Member Name", "School Name", "Student Name"]
+    assert rows[0][10:16] == ["Roll number", "Mobile Number", "Gender", "Grade", "Hand-on Activity Score", "Assessment Score"]
+    assert rows[0][16:66] == [f"q{i}" for i in range(1, 51)]
+    assert rows[0][66:] == ["Needs a check", "Reason", "Scan file"]
+    assert len(rows) == 3
+    # Rows follow the scans' names: double_marked.jpg (Rahul) comes before filled_sheet.jpg (Asha).
+    asha_row = next(r for r in rows[1:] if r[9] == "Asha Patil")
+    assert asha_row[:2] == ["2", "Maharashtra"] and asha_row[2:6] == ["", "", "", ""]
+    assert asha_row[6] == datetime.now(INDIA).date().isoformat()   # entered today
+    assert asha_row[7] == "Admin" and asha_row[10:13] == ["2301", "9876500011", "Female"]
+    assert asha_row[15] == "42.5" and asha_row[16] == "A" and asha_row[66:] == ["", "", "filled_sheet.jpg"]
+    rahul_row = next(r for r in rows[1:] if r[9] == "Rahul Desai")
+    assert rahul_row[66] == "yes" and "q15" in rahul_row[67]
 
+    # A batch is never closed to more sheets: finishing records the end of a run, and the next run
+    # opens it again.
     r = client.post(f"/api/batches/{b['id']}/finish", headers=ADMIN)
-    assert r.json["status"] == "finished"
-    assert client.post(f"/api/batches/{b['id']}/sheets", headers=ADMIN, content_type="multipart/form-data",
-                       data={"file": (open(FIXTURES / "filled_sheet.jpg", "rb"), "a.jpg")}).status_code == 400
+    assert r.json["status"] == "finished" and r.json["finished_at"]
+    r = client.post(f"/api/batches/{b['id']}/sheets", headers=ADMIN, content_type="multipart/form-data",
+                    data={"file": (open(FIXTURES / "filled_sheet.jpg", "rb"), "a.jpg")})
+    assert r.status_code == 201 and r.json[0]["created_by"] == "admin@example.org"
+    assert client.get(f"/api/batches/{b['id']}", headers=ADMIN).json["status"] == "open"
+
+
+def test_results_workbook_for_google_sheets(client):
+    from openpyxl import load_workbook
+
+    t = make_test(client)
+    b = make_batch(client, t["id"], name="ZP Mahalpatane 7")
+    upload(client, b["id"], "filled_sheet.jpg")
+    upload(client, b["id"], "two_sheets.pdf")
+    r = client.get(f"/api/batches/{b['id']}/results.xlsx", headers=ADMIN)
+    assert r.status_code == 200
+    assert r.mimetype == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    assert r.headers["Content-Disposition"].endswith('filename="Maharashtra_ZP_Mahalpatane_7_Endline_Oct_'
+                                                     + f'{datetime.now(timezone.utc):%Y-%m-%d}.xlsx"')
+    ws = load_workbook(io.BytesIO(r.data)).active
+    rows = list(ws.iter_rows(values_only=True))
+    assert rows[0][:3] == ("Sr No", "State", "District") and rows[0][9] == "Student Name" and rows[0][-1] == "Scan file"
+    assert ws["A1"].font.bold and ws.freeze_panes == "A2"
+    assert len(rows) == 4
+    assert [r[9] for r in rows[1:]] == ["Asha Patil", "Vikram Rao", "Meera Iyer"]
+    assert [r[0] for r in rows[1:]] == [1, 2, 3]
+    # The roll number stays text (a leading zero would survive), the score is a number, the date a date.
+    assert rows[1][10] == "2301" and isinstance(rows[1][15], (int, float)) and rows[1][15] == 44
+    assert hasattr(rows[1][6], "year") and rows[1][5] is None
+    assert [r[-1] for r in rows[1:]] == ["filled_sheet.jpg", "two_sheets.pdf, page 1", "two_sheets.pdf, page 2"]
+
+
+def test_states_and_batches_are_filed_and_reused(client):
+    t = make_test(client)
+    assert client.get("/api/states", headers=ADMIN).json == []
+    assert client.post("/api/states", json={"name": "  "}, headers=ADMIN).status_code == 400
+    r = client.post("/api/states", json={"name": "  Maharashtra  "}, headers=ADMIN)
+    assert r.status_code == 201 and r.json["name"] == "Maharashtra"
+    mh = r.json
+    # The same state again, in other capitals, is the same state.
+    r = client.post("/api/states", json={"name": "maharashtra"}, headers=TEACHER_APPROVED(client))
+    assert r.status_code == 200 and r.json["id"] == mh["id"]
+    guj = make_state(client, "Gujarat")
+    assert [s["name"] for s in client.get("/api/states", headers=ADMIN).json] == ["Gujarat", "Maharashtra"]
+
+    # A batch needs a name and goes under its state; the same name again is the same batch.
+    assert client.post("/api/batches", json={"test_id": t["id"], "state_id": mh["id"]}, headers=ADMIN).status_code == 400
+    assert client.post("/api/batches", json={"test_id": t["id"], "state_id": "nope", "name": "x"}, headers=ADMIN).status_code == 400
+    b1 = make_batch(client, t["id"], name="ZP School Mahalpatane, Grade 7", state_id=mh["id"])
+    assert b1["state_id"] == mh["id"] and b1["state_name"] == "Maharashtra"
+    r = client.post("/api/batches", json={"test_id": t["id"], "state_id": mh["id"], "name": "zp school mahalpatane, grade 7"},
+                    headers=ADMIN)
+    assert r.status_code == 200 and r.json["id"] == b1["id"]
+    b2 = make_batch(client, t["id"], name="ZP School Mahalpatane, Grade 7", state_id=guj["id"])
+    assert b2["id"] != b1["id"]
+    listed = client.get(f"/api/batches?test_id={t['id']}&state_id={mh['id']}", headers=ADMIN).json
+    assert [b["id"] for b in listed] == [b1["id"]]
+    assert len(client.get(f"/api/batches?test_id={t['id']}", headers=ADMIN).json) == 2
+
+
+def TEACHER_APPROVED(client):
+    """The teacher's sign-in header, with the account approved by the admin."""
+    client.get("/api/me", headers=TEACHER)
+    users = client.get("/api/users", headers=ADMIN).json
+    teacher = next(u for u in users if u["email"] == "teacher@example.org")
+    client.patch(f"/api/users/{teacher['id']}", json={"status": "approved"}, headers=ADMIN)
+    return TEACHER
+
+
+def test_columns_added_later_are_added_to_an_older_database(tmp_path):
+    """A database made by an earlier version has no states table, no batches.state_id and no
+    sheets.created_by. Starting the app adds them."""
+    from sqlalchemy import Column, MetaData, Table, create_engine, inspect
+    from server.models import Base, add_missing_columns, create_tables
+
+    # The tables as the earlier version made them: the same columns, less the new ones.
+    left_out = {("batches", "state_id"), ("sheets", "created_by")}
+    older = MetaData()
+    for table in Base.metadata.sorted_tables:
+        if table.name != "states":
+            Table(table.name, older, *[Column(c.name, c.type, primary_key=c.primary_key, nullable=c.nullable)
+                                       for c in table.columns if (table.name, c.name) not in left_out])
+    engine = create_engine(f"sqlite:///{tmp_path / 'old.db'}")
+    older.create_all(engine)
+    assert not inspect(engine).has_table("states")
+    assert "state_id" not in {c["name"] for c in inspect(engine).get_columns("batches")}
+    assert "created_by" not in {c["name"] for c in inspect(engine).get_columns("sheets")}
+
+    create_tables(engine)        # the states table
+    add_missing_columns(engine)  # the columns
+    add_missing_columns(engine)  # again: nothing to do, no error
+    assert inspect(engine).has_table("states")
+    assert "state_id" in {c["name"] for c in inspect(engine).get_columns("batches")}
+    assert "created_by" in {c["name"] for c in inspect(engine).get_columns("sheets")}
 
 
 def test_delete_batch_removes_rows_and_files(client, app):

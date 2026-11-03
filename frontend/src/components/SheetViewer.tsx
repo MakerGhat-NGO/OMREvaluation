@@ -4,8 +4,8 @@
 import classNames from 'classnames';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Sheet, sheetImageUrl, Test } from '../lib/api';
-import { fmtScore } from '../lib/format';
+import { Batch, Me, Sheet, sheetImageUrl, Test } from '../lib/api';
+import { fmtScore, friendlyDate, whoDid } from '../lib/format';
 import {
   FIELD, gender, mobileNumber, Problem, problemsOf, rollNumber, sheetKind, sheetTitle, sourceLabel, studentName,
 } from '../lib/sheets';
@@ -23,6 +23,9 @@ export interface SheetViewerProps {
   sheet: Sheet;
   /** The batch's test: answer key, number of questions and marks. */
   test: Test;
+  /** The batch the sheet is in, for the details (state, batch name, who checked it). */
+  batch?: Batch;
+  me?: Me;
   /** The most one sheet can score (0 when the answer key is empty). */
   maxScore: number;
   /** Where this sheet is in the list the teacher moves through (from 1), and how long that list is. */
@@ -41,19 +44,47 @@ export interface SheetViewerProps {
 
 const KNOWN_FIELDS: string[] = [FIELD.name, FIELD.roll, FIELD.mobile, FIELD.gender];
 
+/** The fields of a sheet the template has beyond name, roll, mobile and gender, as "label: value". */
+function otherFields(sheet: Sheet): [string, string][] {
+  const fields = sheet.fields || {};
+  return Object.keys(fields)
+    .filter(k => KNOWN_FIELDS.indexOf(k) < 0 && (fields[k] || '').trim())
+    .map(k => [k, fields[k].trim()]);
+}
+
 /** "Sheet 3 of 5 · roll 2302 · 9876500012 · Male", plus any other field the sheet template has.
  *  A sheet with no name says where it came from ("class7.pdf, page 12"): its title is that file
- *  name, which is cut short on a phone, and the page number is what the teacher needs to scan it again. */
+ *  name (or the roll number), which is cut short on a phone, and the page number is what the teacher
+ *  needs to scan it again. */
 function detailsLine(sheet: Sheet, position: number, total: number): string {
-  const fields = sheet.fields || {};
-  const others = Object.keys(fields)
-    .filter(k => KNOWN_FIELDS.indexOf(k) < 0 && (fields[k] || '').trim())
-    .map(k => `${k}: ${fields[k].trim()}`);
+  const name = studentName(sheet);
   const roll = rollNumber(sheet);
-  const from = studentName(sheet) ? '' : sourceLabel(sheet);
-  return [`Sheet ${position} of ${total}`, from, roll && `roll ${roll}`, mobileNumber(sheet), gender(sheet), ...others]
+  const from = name ? '' : sourceLabel(sheet);
+  const others = otherFields(sheet).map(([k, v]) => `${k}: ${v}`);
+  return [`Sheet ${position} of ${total}`, from, name && roll && `roll ${roll}`, mobileNumber(sheet), gender(sheet), ...others]
     .filter(Boolean)
     .join(' · ');
+}
+
+/** Everything known about the sheet, for the details under its name: what was read from it, where it
+ *  is filed, and who checked it. A field that was not read shows a dash, so the teacher sees it is missing. */
+function detailRows(sheet: Sheet, test: Test, batch?: Batch, me?: Me): [string, string][] {
+  const none = '—';
+  const checker = sheet.created_by || batch?.created_by || '';
+  const when = friendlyDate(sheet.created_at);
+  const who = checker && me ? whoDid(checker, me.user) : checker.split('@')[0];
+  return [
+    ['Name', studentName(sheet) || none],
+    ['Roll number', rollNumber(sheet) || none],
+    ['Mobile number', mobileNumber(sheet) || none],
+    ['Gender', gender(sheet) || none],
+    ...otherFields(sheet),
+    ['State', batch?.state_name || none],
+    ['Batch', batch?.name || none],
+    ['Answer key', test.name],
+    ['Scan', sourceLabel(sheet)],
+    ['Checked', [when, who && `by ${who}`].filter(Boolean).join(' ') || none],
+  ];
 }
 
 function pictureAlt(sheet: Sheet, view: PictureKind): string {
@@ -69,12 +100,13 @@ function pictureAlt(sheet: Sheet, view: PictureKind): string {
  *  phone turned sideways, a zoomed-in laptop) a pinned notice would leave almost no room for the
  *  sheet, so there it scrolls with the sheet, as in the panel. Only one of the two copies is shown;
  *  the hidden one (display: none) is not read out either. */
-function SheetBody({ sheet, problems, cells, layout, screen }: {
+function SheetBody({ sheet, problems, cells, layout, screen, details }: {
   sheet: Sheet;
   problems: Problem[];
   cells: AnswerCell[];
   layout: LayoutResult;
   screen: boolean;
+  details: [string, string][];
 }) {
   const [view, setView] = useState<PictureKind>(sheet.has_checked_image ? 'checked' : 'input');
   const [selected, setSelected] = useState<string | null>(null);
@@ -106,12 +138,19 @@ function SheetBody({ sheet, problems, cells, layout, screen }: {
       <div data-scroll-area className={classNames('min-h-0 flex-1 overflow-y-auto', screen && 'overscroll-contain')}>
         <div className={classNames(screen && 'mx-auto w-full max-w-[760px]', cells.length === 0 && 'pb-5')}>
           {screen ? fullScreenNotice && <div className="hidden [@media(max-height:500px)]:block">{notice}</div> : notice}
+          {/* What was read from the sheet and where it is filed, before the picture. */}
+          <dl aria-label="Sheet details"
+            className="m-0 grid grid-cols-2 gap-x-5 gap-y-2.5 border-b border-line px-5 py-3.5 text-[15px] leading-[22px] sm:grid-cols-3">
+            {details.map(([label, value]) => (
+              <div key={label} className="min-w-0">
+                <dt className="text-muted">{label}</dt>
+                <dd className="m-0 break-words font-semibold text-heading">{value}</dd>
+              </div>
+            ))}
+          </dl>
           <SheetPicture sheet={sheet} view={view} onViewChange={setView} layout={layout} problemLabels={problemLabels}
             selected={selected} showTapHint={canFindAnswers} alt={pictureAlt(sheet, view)} panel={!screen}
             onYellowBoxes={setYellowShown} />
-          {studentName(sheet) && (
-            <p className="m-0 break-words px-5 pt-2 text-[15px] leading-[22px] text-muted">From {sourceLabel(sheet)}</p>
-          )}
           {cells.length > 0 && <AnswerGrid cells={cells} selected={selected} onSelect={select} compact={screen} />}
         </div>
       </div>
@@ -120,7 +159,7 @@ function SheetBody({ sheet, problems, cells, layout, screen }: {
 }
 
 export default function SheetViewer({
-  mode, sheet, test, maxScore, position, total, prev, next, layouts, onPrev, onNext, onClose,
+  mode, sheet, test, batch, me, maxScore, position, total, prev, next, layouts, onPrev, onNext, onClose,
 }: SheetViewerProps) {
   const screen = mode === 'screen';
   const headingId = useId();
@@ -129,6 +168,7 @@ export default function SheetViewer({
 
   const problems = useMemo(() => problemsOf(sheet, test.question_count), [sheet, test.question_count]);
   const cells = useMemo(() => (sheet.status === 'ok' ? answerCells(sheet, test) : []), [sheet, test]);
+  const details = useMemo(() => detailRows(sheet, test, batch, me), [sheet, test, batch, me]);
 
   useEffect(() => {
     load(sheet);
@@ -278,7 +318,8 @@ export default function SheetViewer({
   const content = (
     <>
       {header}
-      <SheetBody key={sheet.id} sheet={sheet} problems={problems} cells={cells} layout={layoutOf(sheet)} screen={screen} />
+      <SheetBody key={sheet.id} sheet={sheet} problems={problems} cells={cells} layout={layoutOf(sheet)} screen={screen}
+        details={details} />
       {footer}
       {/* Tells screen reader users which sheet is open after Previous, Next or an arrow key. */}
       <p aria-live="polite" className="sr-only">{`Sheet ${position} of ${total}: ${title}`}</p>

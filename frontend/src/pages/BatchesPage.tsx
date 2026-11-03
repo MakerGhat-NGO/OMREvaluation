@@ -83,9 +83,9 @@ function loadProblem(e: unknown): LoadProblem {
   }
 }
 
-/** True when every typed word is in the batch name, the test name or the checker's email. */
+/** True when every typed word is in the batch name, the state, the test name or the checker's email. */
 function matchesSearch(b: Batch, words: string[]): boolean {
-  const text = [b.name, b.test_name, b.created_by].join('\n').toLowerCase();
+  const text = [b.name, b.state_name, b.test_name, b.created_by].join('\n').toLowerCase();
   return words.every(word => text.includes(word));
 }
 
@@ -112,7 +112,7 @@ function BatchStats({ batch: b }: { batch: Batch }) {
 function BatchRow({ batch: b, me, onOpen }: { batch: Batch; me: Me; onOpen: (batchId: string) => void }) {
   const testName = (b.test_name || '').trim();
   const title = (b.name || '').trim() || testName || 'No name';
-  const about = [title === testName ? '' : testName, friendlyDate(b.created_at), whoDid(b.created_by || '', me.user)]
+  const about = [b.state_name || '', title === testName ? '' : testName, friendlyDate(b.created_at), whoDid(b.created_by || '', me.user)]
     .filter(Boolean)
     .join(' · ');
   return (
@@ -238,7 +238,7 @@ export default function BatchesPage({ me }: { me: Me }) {
           <IconSearch className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-muted" />
           {/* The label is hidden, so the placeholder is the only visible wording: muted (5.3:1), darker than the shared one. */}
           <input ref={searchBox} id="results-search" type="search" className="input pl-12 placeholder:text-muted" autoComplete="off"
-            placeholder="Search by batch, school or test" value={query}
+            placeholder="Search by batch, state, school or test" value={query}
             onChange={e => setView(e.target.value, show)} />
         </form>
 

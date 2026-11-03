@@ -104,6 +104,28 @@ ALTER TABLE sheets  ALTER COLUMN source_name NVARCHAR(300) NOT NULL;
 It takes a few seconds, and the app can keep running. Names that were already saved as `?` cannot
 be recovered; an answer key can be given its name again on **Answer keys**.
 
+### States, and who checked a sheet (added November 2026)
+
+Batches are now filed under a state, and every sheet records who checked it. That needs a
+`states` table, a `state_id` column on `batches` and a `created_by` column on `sheets`. The app
+adds all three itself the first time it starts on an older database (the `db_ddladmin` role above
+lets it), so nothing needs doing. If the app's identity does not have that role, or the start log
+says a column is missing, run this once as the admin in the **Query editor**:
+
+```sql
+CREATE TABLE states (
+    id         VARCHAR(32)   NOT NULL PRIMARY KEY,
+    name       NVARCHAR(200) NOT NULL UNIQUE,
+    created_by VARCHAR(320)  NOT NULL,
+    created_at DATETIME2     NOT NULL
+);
+ALTER TABLE batches ADD state_id   VARCHAR(32)  NULL;
+ALTER TABLE sheets  ADD created_by VARCHAR(320) NULL;
+```
+
+Batches made before this have no state; they still open and download as before, with the State
+column of the download left empty.
+
 ## 4. Storage for scanned sheets
 
 ```bash

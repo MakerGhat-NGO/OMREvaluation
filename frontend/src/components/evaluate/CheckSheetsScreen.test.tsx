@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { api, ApiError, Me, Sheet, Test } from '../../lib/api';
+import { api, ApiError, Batch, Me, Sheet, State, Test } from '../../lib/api';
 import { countPages, pagesOf } from '../../lib/pages';
 import EvaluatePage from '../../pages/EvaluatePage';
 import { ToastProvider } from '../Toast';
@@ -27,8 +27,26 @@ const endline: Test = {
 };
 const okSheet = (source: string, page: number, needsReview: boolean): Sheet => ({
   id: `${source}-${page}`, batch_id: 'b1', source_name: source, page_no: page, status: 'ok', error_reason: '', fields: {},
-  answers: {}, score: 10, needs_review: needsReview, review_reason: '', has_checked_image: true, created_at: '',
+  answers: {}, score: 10, needs_review: needsReview, review_reason: '', has_checked_image: true, created_at: '', created_by: '',
 });
+const maharashtra: State = { id: 's1', name: 'Maharashtra', created_by: 'teacher@example.org', created_at: '' };
+const madeBatch = (id: string, name: string, sheetCount = 0): Batch => ({
+  id, test_id: 't1', test_name: endline.name, state_id: 's1', state_name: 'Maharashtra', name, created_by: 'teacher@example.org',
+  created_at: '', finished_at: null, status: 'finished', sheet_count: sheetCount, read_count: sheetCount, review_count: 0,
+  error_count: 0, average_score: sheetCount ? 10 : null, max_score: 1,
+});
+/** The batches the server lists for the chosen test and state. Tests add to it. */
+let batchesOnServer: Batch[];
+
+/** The server's answers: the answer keys, the states and the batches of test t1 in state s1. */
+const givenKeys = (keys: Test[]) => {
+  (api.get as jest.Mock).mockImplementation(async (url: string) => {
+    if (url === '/api/tests') return keys;
+    if (url === '/api/states') return [maharashtra];
+    if (url === '/api/batches?test_id=t1&state_id=s1') return batchesOnServer;
+    return [];
+  });
+};
 
 // jsdom has no layout: give it the few browser calls the screen makes.
 beforeAll(() => {
@@ -37,8 +55,11 @@ beforeAll(() => {
   Element.prototype.scrollIntoView = () => undefined;
 });
 
+// Most tests check into a batch that exists already: b1, under state s1, for test t1. (Choosing
+// another test or state drops the batch, since batches belong to a test and a state.)
 beforeEach(() => {
-  updateSession({ testId: '', batchName: '', files: [], run: null, startError: '' });
+  batchesOnServer = [madeBatch('b1', 'ZP Mahalpatane, Grade 7', 3)];
+  updateSession({ testId: 't1', stateId: 's1', batchId: 'b1', newBatchName: '', files: [], run: null, startError: '' });
 });
 
 const renderScreen = () =>
@@ -68,20 +89,31 @@ const onePagePerFile = () => {
 };
 
 test('without answer keys it asks for one first', async () => {
-  (api.get as jest.Mock).mockResolvedValue([]);
+  givenKeys([]);
   renderScreen();
   expect(await screen.findByText('First, make an answer key')).toBeInTheDocument();
   expect(screen.getByRole('link', { name: 'Make an answer key' })).toHaveAttribute('href', '/tests?new=1');
 });
 
-test('picks files, checks them and shows the result', async () => {
-  (api.get as jest.Mock).mockResolvedValue([endline]);
+test('picks files, adds a state and a batch, checks them and shows the result', async () => {
+  // Nothing chosen yet, and no batches under the state.
+  batchesOnServer = [];
+  updateSession({ stateId: '', batchId: '' });
+  givenKeys([endline]);
   (countPages as jest.Mock).mockResolvedValue(20);
   (pagesOf as jest.Mock).mockImplementation(async function* fakePages(files: File[]) {
     const pages = files[0].name.endsWith('.pdf') ? 20 : 1;
     for (let pageNo = 1; pageNo <= pages; pageNo++) yield { blob: new Blob(['jpg']), sourceName: files[0].name, pageNo };
   });
-  (api.post as jest.Mock).mockImplementation(async (url: string) => (url === '/api/batches' ? { id: 'b1' } : {}));
+  (api.post as jest.Mock).mockImplementation(async (url: string, body: { name: string }) => {
+    if (url === '/api/states') return maharashtra;
+    if (url === '/api/batches') {
+      const made = madeBatch('b1', body.name);
+      batchesOnServer = [made];
+      return made;
+    }
+    return {};
+  });
   (api.upload as jest.Mock).mockImplementation(async (url: string, form: FormData) =>
     [okSheet(String(form.get('source_name')), Number(form.get('page_no')), form.get('page_no') === '3')]);
 
@@ -97,7 +129,22 @@ test('picks files, checks them and shows the result', async () => {
   expect(screen.getByText('2 files · 21 sheets')).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Remove class7.pdf' })).toBeInTheDocument();
 
-  fireEvent.change(screen.getByLabelText(/Batch name/), { target: { value: 'ZP Mahalpatane, Grade 7' } });
+  // No state or batch yet: the button waits for them.
+  expect(screen.getByRole('button', { name: 'Check 21 sheets' })).toBeDisabled();
+  expect(screen.getByLabelText('Batch')).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: 'New state' }));
+  fireEvent.change(screen.getByLabelText('New state'), { target: { value: '  Maharashtra ' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Add state' }));
+  expect(api.post).toHaveBeenCalledWith('/api/states', { name: 'Maharashtra' });
+  expect(await screen.findByLabelText('State')).toHaveValue('s1');
+  expect(screen.getByText('No batches yet')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'New batch' }));
+  fireEvent.change(screen.getByLabelText('New batch'), { target: { value: 'ZP Mahalpatane, Grade 7' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Use this name' }));
+  expect(screen.getByLabelText('Batch')).toHaveValue('new');
+  expect(screen.getByRole('option', { name: 'New: ZP Mahalpatane, Grade 7' })).toBeInTheDocument();
+  expect(screen.getByText('This batch is made when checking starts.')).toBeInTheDocument();
+
   fireEvent.click(screen.getByRole('button', { name: 'Check 21 sheets' }));
   expect(screen.getByRole('progressbar', { name: 'Sheets checked' })).toBeInTheDocument();
 
@@ -106,7 +153,7 @@ test('picks files, checks them and shows the result', async () => {
   expect(finishedTitle).toHaveFocus();
   expect(finishedTitle.compareDocumentPosition(select) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(screen.getByText(DONE_HINT)).toBeInTheDocument();
-  expect(api.post).toHaveBeenCalledWith('/api/batches', { test_id: 't1', name: 'ZP Mahalpatane, Grade 7' });
+  expect(api.post).toHaveBeenCalledWith('/api/batches', { test_id: 't1', state_id: 's1', name: 'ZP Mahalpatane, Grade 7' });
   expect(api.post).toHaveBeenLastCalledWith('/api/batches/b1/finish');
   expect(screen.getByText('Finished. 21 sheets checked: 20 read fine, 1 to check, 0 could not read.')).toBeInTheDocument();
   expect(screen.getByRole('link', { name: 'See results' })).toHaveAttribute('href', '/batches/b1');
@@ -117,12 +164,37 @@ test('picks files, checks them and shows the result', async () => {
   expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
   expect(screen.queryByText('class7.pdf')).not.toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Check sheets' })).toBeDisabled();
-  expect(screen.getByLabelText(/Batch name/)).toHaveValue('');
+  // The batch just made stays chosen, so the next sheets go into it.
   expect(screen.getByLabelText('Which test?')).toHaveValue('t1');
+  expect(screen.getByLabelText('State')).toHaveValue('s1');
+  expect(await screen.findByRole('option', { name: 'ZP Mahalpatane, Grade 7' })).toBeInTheDocument();
+  expect(screen.getByLabelText('Batch')).toHaveValue('b1');
+});
+
+test('a batch that exists is chosen from the list, and its sheets so far are said', async () => {
+  batchesOnServer = [madeBatch('b1', 'ZP Mahalpatane, Grade 7', 3), madeBatch('b2', 'ZP Kothur, Grade 6')];
+  updateSession({ batchId: '' });
+  givenKeys([endline]);
+  onePagePerFile();
+  (api.upload as jest.Mock).mockImplementation(async (url: string, form: FormData) =>
+    [okSheet(String(form.get('source_name')), 1, false)]);
+  const { container } = renderScreen();
+  const batchSelect = await screen.findByLabelText('Batch');
+  expect(within(batchSelect).getByRole('option', { name: 'ZP Mahalpatane, Grade 7 (3 sheets)' })).toBeInTheDocument();
+  expect(within(batchSelect).getByRole('option', { name: 'ZP Kothur, Grade 6' })).toBeInTheDocument();
+  fireEvent.change(batchSelect, { target: { value: 'b1' } });
+  expect(screen.getByText('3 sheets in this batch so far. These sheets are added to it.')).toBeInTheDocument();
+
+  pick(container, [new File(['jpg'], 'IMG_1.jpg')]);
+  fireEvent.click(screen.getByRole('button', { name: 'Check 1 sheet' }));
+  expect(await screen.findByRole('heading', { name: 'Finished: 1 sheet checked' })).toBeInTheDocument();
+  expect(api.post).not.toHaveBeenCalledWith('/api/batches', expect.anything());
+  expect(api.upload).toHaveBeenCalledWith('/api/batches/b1/sheets', expect.any(FormData));
+  expect(screen.getByRole('link', { name: 'See results' })).toHaveAttribute('href', '/batches/b1');
 });
 
 test('a PDF that cannot be opened is marked and left out of the sheet count', async () => {
-  (api.get as jest.Mock).mockResolvedValue([endline]);
+  givenKeys([endline]);
   (countPages as jest.Mock).mockRejectedValue(new Error('Invalid PDF structure.'));
   const { container } = renderScreen();
   await screen.findByLabelText('Which test?');
@@ -139,7 +211,7 @@ test('a PDF that cannot be opened is marked and left out of the sheet count', as
 });
 
 test('coming back to a finished check shows its card first and leaves focus alone', async () => {
-  (api.get as jest.Mock).mockResolvedValue([endline]);
+  givenKeys([endline]);
   updateSession({
     testId: 't1',
     files: [{ key: 'k1', file: new File(['jpg'], 'IMG_1.jpg'), kind: 'photo', pages: 1, unreadable: false }],
@@ -155,7 +227,7 @@ test('coming back to a finished check shows its card first and leaves focus alon
 
 test('the answer key shown stays chosen when a newer key is made meanwhile', async () => {
   const newer: Test = { ...endline, id: 't2', name: 'Baseline Nov 2026 · Class 7' };
-  (api.get as jest.Mock).mockResolvedValue([endline]);
+  givenKeys([endline]);
   onePagePerFile();
   (api.upload as jest.Mock).mockImplementation(async (url: string, form: FormData) =>
     [okSheet(String(form.get('source_name')), 1, false)]);
@@ -165,17 +237,17 @@ test('the answer key shown stays chosen when a newer key is made meanwhile', asy
   pick(container, [new File(['jpg'], 'IMG_1.jpg')]);
   // The teacher looks at another tab of the app, and someone makes a newer key meanwhile.
   unmount();
-  (api.get as jest.Mock).mockResolvedValue([newer, endline]);
+  givenKeys([newer, endline]);
 
   renderScreen();
   expect(await screen.findByLabelText('Which test?')).toHaveValue('t1');
   fireEvent.click(screen.getByRole('button', { name: 'Check 1 sheet' }));
   expect(await screen.findByRole('heading', { name: 'Finished: 1 sheet checked' })).toBeInTheDocument();
-  expect(api.post).toHaveBeenCalledWith('/api/batches', { test_id: 't1', name: '' });
+  expect(api.upload).toHaveBeenCalledWith('/api/batches/b1/sheets', expect.any(FormData));
 });
 
 test('when the chosen answer key is gone, the key shown is the key used', async () => {
-  (api.get as jest.Mock).mockResolvedValue([endline]);
+  givenKeys([endline]);
   updateSession({ testId: 'archived-key' });
   renderScreen();
   expect(await screen.findByLabelText('Which test?')).toHaveValue('t1');
@@ -183,7 +255,7 @@ test('when the chosen answer key is gone, the key shown is the key used', async 
 });
 
 test('says the first problem once, and lists the others without reading them out', async () => {
-  (api.get as jest.Mock).mockResolvedValue([endline]);
+  givenKeys([endline]);
   onePagePerFile();
   // IMG_1 fails at once; IMG_2 and IMG_3 wait for the test to answer for the server.
   const reply: Record<string, (works: boolean) => void> = {};
@@ -222,6 +294,6 @@ test('says the first problem once, and lists the others without reading them out
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   expect(screen.getByText(
     'These pages are not in the results. To check them, press “Check more sheets”, then add those files again or take '
-    + 'new photos of those sheets. They are checked as a new batch.',
+    + 'new photos of those sheets. They go into the same batch.',
   )).toBeInTheDocument();
 });

@@ -25,7 +25,8 @@ const endline: Test = {
 };
 
 const batch = (id: string, name: string, extra: Partial<Batch> = {}): Batch => ({
-  id, test_id: 't1', test_name: endline.name, name, created_by: 'asha@example.org', created_at: new Date().toISOString(),
+  id, test_id: 't1', test_name: endline.name, state_id: 's1', state_name: 'Maharashtra', name, created_by: 'asha@example.org',
+  created_at: new Date().toISOString(),
   finished_at: null, status: 'finished', sheet_count: 9, read_count: 8, review_count: 0, error_count: 1,
   average_score: 20, max_score: 25, ...extra,
 });
@@ -40,7 +41,7 @@ const FILE = 'ZP Mahalpatane Grade 7.pdf';
 const read = (page: number, name: string, roll: string, score: number, extra: Partial<Sheet> = {}): Sheet => ({
   id: `s${page}`, batch_id: 'b1', source_name: FILE, page_no: page, status: 'ok', error_reason: '',
   fields: { Name: name, 'Roll Number': roll }, answers: {}, score, needs_review: false, review_reason: '',
-  has_checked_image: true, created_at: '', ...extra,
+  has_checked_image: true, created_at: '', created_by: 'asha@example.org', ...extra,
 });
 const sheets: Sheet[] = [
   read(1, 'ASHA PATIL', '2301', 20),
@@ -55,6 +56,7 @@ const sheets: Sheet[] = [
   {
     id: 's12', batch_id: 'b1', source_name: FILE, page_no: 12, status: 'error', error_reason: 'corner targets not found',
     fields: {}, answers: {}, score: null, needs_review: false, review_reason: '', has_checked_image: false, created_at: '',
+    created_by: 'asha@example.org',
   },
 ];
 

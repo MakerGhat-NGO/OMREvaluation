@@ -1,26 +1,35 @@
-// Stands in for the "Check sheets" screen (pages/EvaluatePage.tsx) while the answer keys load: the card
-// with the test and the batch name, the Scans card before any file is chosen (evaluate/ScansCard.tsx)
-// and the big button. The page title is real and already on screen. Each box has the height of the real
-// one, also where its text runs onto more lines on a narrow screen, so nothing moves when the keys arrive.
+// Stands in for the "Check sheets" screen (pages/EvaluatePage.tsx) while the answer keys and states load:
+// the card with the test, the state and the batch, the Scans card before any file is chosen
+// (evaluate/ScansCard.tsx) and the big button. The page title is real and already on screen. Each box has
+// the height of the real one, also where its text runs onto more lines on a narrow screen, so nothing
+// moves when the keys arrive.
 import { Skeleton, SkeletonScreen } from '../ui';
 
 export default function EvaluateSkeleton() {
   return (
     <SkeletonScreen label="Loading answer keys…" className="flex flex-col gap-5">
-      {/* "Which test?" and "Batch name": a label above a 56px select or text box, side by side from md.
-          Each bar's margins make up its line's height: 24px for a label, 28px for a title, 22px for a hint. */}
+      {/* "Which test?" on its own line, then "State" and "Batch" side by side from md: a label above a
+          56px select with a button beside it. Each bar's margins make up its line's height: 24px for a
+          label, 28px for a title, 22px for a hint. */}
       <div className="card grid grid-cols-1 gap-4 md:grid-cols-2">
-        <div className="flex min-w-0 flex-col gap-1.5">
+        <div className="flex min-w-0 flex-col gap-1.5 md:col-span-2">
           <Skeleton className="my-1 h-4 w-20 rounded-full" />
           <Skeleton className="h-14 w-full rounded-[14px]" />
         </div>
         <div className="flex min-w-0 flex-col gap-1.5">
-          {/* "Batch name (optional, e.g. school and class)" runs onto a second line below 383px. */}
-          <div className="flex flex-col">
-            <Skeleton className="my-1 h-4 w-72 max-w-full rounded-full" />
-            <Skeleton className="my-1 h-4 w-10 rounded-full min-[383px]:hidden" />
+          <Skeleton className="my-1 h-4 w-12 rounded-full" />
+          <div className="flex gap-2">
+            <Skeleton className="h-14 min-w-0 flex-1 rounded-[14px]" />
+            <Skeleton className="h-14 w-28 shrink-0 rounded-full" />
           </div>
-          <Skeleton className="h-14 w-full rounded-[14px]" />
+        </div>
+        <div className="flex min-w-0 flex-col gap-1.5">
+          <Skeleton className="my-1 h-4 w-12 rounded-full" />
+          <div className="flex gap-2">
+            <Skeleton className="h-14 min-w-0 flex-1 rounded-[14px]" />
+            <Skeleton className="h-14 w-28 shrink-0 rounded-full" />
+          </div>
+          <Skeleton className="my-1 h-3.5 w-3/4 rounded-full" />
         </div>
       </div>
 

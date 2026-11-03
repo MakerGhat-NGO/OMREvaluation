@@ -92,20 +92,41 @@ class Test(Base):
                 "archived": self.archived}
 
 
+class State(Base):
+    """A state (Maharashtra, say) that batches of sheets are filed under. Teachers make them as
+    they need them, on the "Check sheets" screen."""
+    __tablename__ = "states"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(Unicode(200), unique=True)
+    created_by: Mapped[str] = mapped_column(String(320))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    batches: Mapped[list["Batch"]] = relationship(back_populates="state")
+
+    def to_dict(self) -> dict:
+        return {"id": self.id, "name": self.name, "created_by": self.created_by, "created_at": iso(self.created_at)}
+
+
 class Batch(Base):
+    """A set of sheets checked with one answer key, filed under a state. Sheets can be added to it
+    at any time: status is "open" while a run of checking is adding sheets (or was cut off) and
+    "finished" when the last run ended, at finished_at."""
     __tablename__ = "batches"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     test_id: Mapped[str] = mapped_column(ForeignKey("tests.id"), index=True)
+    # Nullable: batches made before states existed have none (see add_missing_columns).
+    state_id: Mapped[Optional[str]] = mapped_column(ForeignKey("states.id"), nullable=True, index=True)
     name: Mapped[str] = mapped_column(Unicode(200), default="")
     created_by: Mapped[str] = mapped_column(String(320))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="open")         # open | finished
     test: Mapped[Test] = relationship(back_populates="batches")
+    state: Mapped[Optional[State]] = relationship(back_populates="batches")
     sheets: Mapped[list["Sheet"]] = relationship(back_populates="batch", cascade="all, delete-orphan")
 
     def to_dict(self, with_counts: bool = True) -> dict:
         d = {"id": self.id, "test_id": self.test_id, "test_name": self.test.name if self.test else None,
+             "state_id": self.state_id, "state_name": self.state.name if self.state else None,
              "name": self.name, "created_by": self.created_by,
              "created_at": iso(self.created_at),
              "finished_at": iso(self.finished_at), "status": self.status}
@@ -136,6 +157,8 @@ class Sheet(Base):
     needs_review: Mapped[bool] = mapped_column(Boolean, default=False)
     review_reason: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    # Who checked this sheet (email). NULL on sheets checked before the column existed.
+    created_by: Mapped[Optional[str]] = mapped_column(String(320), nullable=True, default="")
     batch: Mapped[Batch] = relationship(back_populates="sheets")
 
     @property
@@ -151,7 +174,7 @@ class Sheet(Base):
                 "status": self.status, "error_reason": self.error_reason, "fields": self.fields,
                 "answers": self.answers, "score": self.score, "needs_review": self.needs_review,
                 "review_reason": self.review_reason, "has_checked_image": bool(self.checked_path),
-                "created_at": iso(self.created_at)}
+                "created_at": iso(self.created_at), "created_by": self.created_by or ""}
 
 
 def make_session_factory(database_url: str):
@@ -168,6 +191,7 @@ def make_session_factory(database_url: str):
         def _sqlite_pragmas(dbapi_conn, _):
             dbapi_conn.execute("PRAGMA foreign_keys=ON")
     create_tables(engine)
+    add_missing_columns(engine)
     return engine, scoped_session(sessionmaker(bind=engine, expire_on_commit=False))
 
 
@@ -190,3 +214,30 @@ def create_tables(engine, attempts: int = 5) -> None:
             if not any(phrase in message for phrase in already_there) or attempt == attempts - 1:
                 raise
             time.sleep(0.3 * (attempt + 1))
+
+
+def add_missing_columns(engine) -> None:
+    """Add to each table the columns this version has and the database does not: a database made
+    by an earlier version keeps its tables, and create_all never changes a table that exists. Every
+    column added this way allows NULL, so the rows already there need nothing. Two workers starting
+    at once can both try to add one; the loser's "duplicate column" is fine (the column is there).
+    The same statements, for running by hand, are in docs/AZURE_SETUP.md."""
+    from sqlalchemy import inspect, text
+    from sqlalchemy.exc import OperationalError, ProgrammingError
+
+    inspector = inspect(engine)
+    keyword = "ADD" if engine.dialect.name == "mssql" else "ADD COLUMN"
+    for table in Base.metadata.sorted_tables:
+        if not inspector.has_table(table.name):
+            continue
+        present = {c["name"].lower() for c in inspector.get_columns(table.name)}
+        for column in table.columns:
+            if column.name.lower() in present:
+                continue
+            kind = column.type.compile(engine.dialect)
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE {table.name} {keyword} {column.name} {kind} NULL"))
+            except (OperationalError, ProgrammingError) as exc:
+                if "duplicate" not in str(exc).lower() and "already" not in str(exc).lower():
+                    raise

@@ -49,15 +49,26 @@ export const api = {
 export interface User { id: string; email: string; name: string; role: 'teacher' | 'admin'; status: 'pending' | 'approved' | 'disabled'; created_at: string; approved_by: string | null; }
 export interface Me { signed_in: boolean; user: User; sheet: { question_count: number; field_labels: string[] }; }
 export interface Test { id: string; name: string; question_count: number; options: string; marks_correct: number; marks_incorrect: number; marks_unmarked: number; answer_key: Record<string, string>; created_by: string; created_at: string; archived: boolean; }
+/** A state (Maharashtra, say) that batches are filed under. Teachers add states as they need them. */
+export interface State { id: string; name: string; created_by: string; created_at: string; }
 export interface Batch {
-  id: string; test_id: string; test_name: string | null; name: string; created_by: string; created_at: string; finished_at: string | null;
+  id: string; test_id: string; test_name: string | null;
+  /** The state the batch is filed under; null on batches made before states existed. */
+  state_id: string | null; state_name: string | null;
+  name: string; created_by: string; created_at: string; finished_at: string | null;
   status: 'open' | 'finished'; sheet_count: number; read_count: number; review_count: number; error_count: number;
   /** Mean score of the sheets that were read; null when none were. */
   average_score: number | null;
   /** The most one sheet can score with this answer key. */
   max_score: number | null;
 }
-export interface Sheet { id: string; batch_id: string; source_name: string; page_no: number; status: 'ok' | 'error'; error_reason: string; fields: Record<string, string>; answers: Record<string, string>; score: number | null; needs_review: boolean; review_reason: string; has_checked_image: boolean; created_at: string; }
+export interface Sheet {
+  id: string; batch_id: string; source_name: string; page_no: number; status: 'ok' | 'error'; error_reason: string;
+  fields: Record<string, string>; answers: Record<string, string>; score: number | null; needs_review: boolean;
+  review_reason: string; has_checked_image: boolean; created_at: string;
+  /** Email of the person who checked it; '' on sheets checked before this was kept. */
+  created_by: string;
+}
 /** Where each question (q1..q50) and field (Name, Roll Number, Mobile Number, gender) sits on the
  *  checked picture: [left, top, right, bottom] as fractions of the picture's width and height. */
 export interface SheetLayout { boxes: Record<string, [number, number, number, number]>; }

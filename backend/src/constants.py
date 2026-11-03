@@ -54,3 +54,8 @@ CLR_DARK_GRAY = (100, 100, 100)
 # TODO: move to config.json
 GLOBAL_PAGE_THRESHOLD_WHITE = 100
 GLOBAL_PAGE_THRESHOLD_BLACK = 100
+# At most this share of the bubbles on a page is taken to be filled when choosing the page's
+# threshold: a sheet has one answer per question and one letter per name column, so filled
+# bubbles are a small minority. A sheet of this app's template has about 1200 bubbles, of
+# which at most 130 or so are ever filled, double marks included.
+MAX_FILLED_FRACTION = 0.3

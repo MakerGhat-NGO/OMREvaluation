@@ -24,8 +24,11 @@ export function sourceLabel(s: Sheet): string {
   return isPdf || s.page_no > 1 ? `${s.source_name}, page ${s.page_no}` : s.source_name;
 }
 
-/** The name to show in lists: the student's name, else where the sheet came from. */
-export const sheetTitle = (s: Sheet) => studentName(s) || sourceLabel(s);
+/** The name to show in lists: the student's name, else "Roll 2302", else where the sheet came from. */
+export function sheetTitle(s: Sheet): string {
+  const roll = rollNumber(s);
+  return studentName(s) || (roll ? `Roll ${roll}` : sourceLabel(s));
+}
 
 export function answerKind(marked: string | undefined, correct: string | undefined): AnswerKind {
   const m = (marked || '').trim();
@@ -64,7 +67,23 @@ export function problemsOf(s: Sheet, questionCount: number): Problem[] {
   }
   for (const reason of (s.review_reason || '').split(';').map(r => r.trim()).filter(Boolean)) {
     if (reason.startsWith('two bubbles filled for')) continue; // listed question by question above
-    if (reason === 'two bubbles filled in a name or number field') {
+    const column = /^two bubbles filled in a column of the (name|roll number|mobile number)$/.exec(reason);
+    const digits = /^mobile number has (\d+) digits?, not 10$/.exec(reason);
+    if (column) {
+      const field = column[1] === 'name' ? FIELD.name : column[1] === 'roll number' ? FIELD.roll : FIELD.mobile;
+      const short = column[1] === 'name' ? 'name' : column[1] === 'roll number' ? 'roll no.' : 'mobile no.';
+      const what = column[1] === 'name' ? 'a letter' : 'a digit';
+      out.push({ text: `Two bubbles are filled in one column of the ${column[1]}, so ${what} may be wrong.`, boxes: [field], short });
+    } else if (reason === 'both gender bubbles filled') {
+      out.push({ text: 'Both gender bubbles are filled.', boxes: [FIELD.gender], short: 'gender' });
+    } else if (digits) {
+      const n = digits[1];
+      out.push({
+        text: `The mobile number has ${n} digit${n === '1' ? '' : 's'}, not 10. A column may have been skipped, or a mark may be stray.`,
+        boxes: [FIELD.mobile], short: 'mobile no.',
+      });
+    } else if (reason === 'two bubbles filled in a name or number field') {
+      // Sheets checked by an older version, which did not say which field.
       out.push({ text: 'Two bubbles are filled in one column of the name, roll number or mobile number.', boxes: [FIELD.name, FIELD.roll, FIELD.mobile], short: 'name or number' });
     } else if (reason === 'name is blank') {
       out.push({ text: 'No name was read. Look at the name boxes on the sheet.', boxes: [FIELD.name], short: 'name' });
