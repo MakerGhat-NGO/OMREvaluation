@@ -2,6 +2,7 @@
 // plain-language messages around it. Kept apart from the screen so the rules are easy to read and test.
 import { ApiError, Test } from '../../lib/api';
 import { capitalise, plural } from '../../lib/format';
+import { ANY_ONE, anyOneIsRight, keyLetters } from '../../lib/sheets';
 
 /** The answer choices the printed sheet offers. */
 export const CHOICES = [
@@ -36,8 +37,24 @@ export interface KeyDraft {
   marksRight: string;
   marksWrong: string;
   marksBlank: string;
-  /** q1 -> "A". Can hold answers past `count` while the Questions box is being typed in. */
+  /** q1 -> "A"; "BC" when B and C must both be filled, "B/C" when either one is right. Can hold
+   *  answers past `count` while the Questions box is being typed in. */
   answers: Record<string, string>;
+}
+
+/** True when every letter of a key's answer is one of the answer choices. */
+export const fitsChoices = (answer: string, options: string) =>
+  keyLetters(answer).split('').every(letter => options.includes(letter));
+
+/** One question's answer as the key keeps it: "B", "BC" (all must be filled) or "B/C" (any one is
+ *  right), the letters in the order of the sheet. '' when it holds a letter that is not a choice,
+ *  or the same letter twice. */
+export function tidyAnswer(answer: string, options: string): string {
+  const typed = answer.replace(/\s+/g, '').toUpperCase();
+  const letters = keyLetters(typed);
+  const picked = options.split('').filter(o => letters.includes(o));
+  if (!letters || picked.length !== letters.length) return '';
+  return picked.join(anyOneIsRight(typed) && picked.length > 1 ? ANY_ONE : '');
 }
 
 const numberText = (v: number | null | undefined, fallback: number) =>
@@ -52,8 +69,8 @@ export function draftFrom(test: Test | null, max: number): KeyDraft {
   const count = Math.min(Math.max(test.question_count || max, 1), max);
   const answers: Record<string, string> = {};
   for (let n = 1; n <= count; n++) {
-    const letter = (test.answer_key?.[qLabel(n)] || '').trim().toUpperCase();
-    if (letter.length === 1 && options.includes(letter)) answers[qLabel(n)] = letter;
+    const answer = tidyAnswer(test.answer_key?.[qLabel(n)] || '', options);
+    if (answer) answers[qLabel(n)] = answer;
   }
   return {
     name: test.name || '',

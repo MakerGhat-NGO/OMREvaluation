@@ -1,7 +1,22 @@
 """The per-scan grid fit that puts bubble windows on the circles a particular print run drew."""
 import numpy as np
 
-from omr.engine import circle_likeness, fit_grid_axis, mobile_digits_reason
+from omr.engine import circle_likeness, fit_grid_axis, is_right, mobile_digits_reason, needs_all, score_answers
+
+
+def test_a_key_answer_is_one_letter_all_of_several_or_any_one_of_several():
+    assert is_right("B", "B") and not is_right("C", "B") and not is_right("", "B")
+    # "BC": both must be filled, and nothing else.
+    assert is_right("BC", "BC") and is_right("CB", "BC")
+    assert not is_right("B", "BC") and not is_right("BCD", "BC")
+    # "B/C": either one alone.
+    assert is_right("B", "B/C") and is_right("C", "B/C")
+    assert not is_right("BC", "B/C") and not is_right("D", "B/C")
+    assert needs_all("BC") and not needs_all("B/C") and not needs_all("B") and not needs_all("")
+
+    key = {"q1": "A", "q2": "BC", "q3": "B/C", "q4": "D"}
+    assert score_answers({"q1": "A", "q2": "BC", "q3": "C", "q4": ""}, key, 1, -0.25, 0) == 3
+    assert score_answers({"q1": "A", "q2": "B", "q3": "BC", "q4": "A"}, key, 1, -0.25, 0) == 0.25
 
 
 def ink_profile_for_circles(centres, length=1000, radius=12):

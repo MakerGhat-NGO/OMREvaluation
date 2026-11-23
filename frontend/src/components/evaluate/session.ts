@@ -3,6 +3,7 @@
 // the files a teacher picked (often photos taken one by one) and shows the checking, which keeps
 // going meanwhile: it runs in this browser tab, not in the screen.
 import { useSyncExternalStore } from 'react';
+import { BatchDetails, NO_DETAILS } from '../../lib/ignite';
 import { countPages, isSupported } from '../../lib/pages';
 
 /** One file in the Scans list. */
@@ -48,9 +49,16 @@ export interface Session {
   run: CheckRun | null;
   /** Why checking could not start, as a sentence. */
   startError: string;
+  /** IGNITE: the school details typed for the batch. They are sent with the batch only while
+   *  sendDetails is on, which the screen sets when the server has the feature switched on. */
+  details: BatchDetails;
+  sendDetails: boolean;
 }
 
-let session: Session = { testId: '', stateId: '', batchId: '', newBatchName: '', files: [], run: null, startError: '' };
+let session: Session = {
+  testId: '', stateId: '', batchId: '', newBatchName: '', files: [], run: null, startError: '',
+  details: NO_DETAILS, sendDetails: false,
+};
 const listeners = new Set<() => void>();
 
 export const getSession = () => session;
@@ -80,6 +88,8 @@ export const setStateId = (stateId: string) =>
   updateSession(current => (current.stateId === stateId ? {} : { stateId, batchId: '', newBatchName: '' }));
 export const setBatchId = (batchId: string) => updateSession({ batchId, newBatchName: '' });
 export const setNewBatch = (name: string) => updateSession({ batchId: NEW_BATCH, newBatchName: name });
+export const setDetails = (patch: Partial<BatchDetails>) =>
+  updateSession(current => ({ details: { ...current.details, ...patch } }));
 
 /** True when the sheets have somewhere to go: a batch is chosen, or a new one has a name. */
 export const batchChosen = (s: Session) =>

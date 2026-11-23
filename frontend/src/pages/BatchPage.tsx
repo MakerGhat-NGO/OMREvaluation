@@ -6,6 +6,9 @@ import classNames from 'classnames';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { IconChevronLeft, IconChevronRight, IconDownload, IconSearch, IconTrash } from '../components/Icons';
+import BatchIgniteCard from '../components/ignite/BatchIgniteCard';
+import HandsOnBox from '../components/ignite/HandsOnBox';
+import { FixContext, LEAVE_SHEET } from '../components/ignite/SheetFix';
 import SheetViewer from '../components/SheetViewer';
 import { useSheetLayouts } from '../components/sheet/useSheetLayouts';
 import BatchSkeleton from '../components/skeletons/BatchSkeleton';
@@ -13,6 +16,7 @@ import { useToast } from '../components/Toast';
 import { Chip, EmptyState, LiveCount, Notice } from '../components/ui';
 import { api, ApiError, Batch, Me, Sheet, Test } from '../lib/api';
 import { capitalise, fmtScore, friendlyDate, plural, whoDid } from '../lib/format';
+import { igniteOn, keptSheets } from '../lib/ignite';
 import {
   checkSummary, countKinds, Problem, problemsOf, rollNumber, SheetKind, sheetKind, sheetTitle, sourceLabel, studentName,
 } from '../lib/sheets';
@@ -47,12 +51,16 @@ const isWide = () => window.matchMedia(WIDE_QUERY).matches;
 /** True when the list and the sheet fit side by side. */
 const useWideScreen = () => useSyncExternalStore(subscribeToWidth, isWide);
 
-const RANK: Record<SheetKind, number> = { error: 0, check: 1, fine: 2 };
+/** How a row looks. 'out': the sheet is left out of the results (IGNITE). */
+type RowKind = SheetKind | 'out';
+const rowKind = (s: Sheet): RowKind => (s.left_out ? 'out' : sheetKind(s));
+const RANK: Record<RowKind, number> = { error: 0, check: 1, fine: 2, out: 3 };
 
-/** Could not read first, then to check, then read fine; the server's order (file, page) inside each. */
+/** Could not read first, then to check, then read fine, then the sheets left out; the server's
+ *  order (file, page) inside each. */
 function orderForTeacher(sheets: Sheet[]): Sheet[] {
   return sheets
-    .map((sheet, i) => ({ sheet, i, rank: RANK[sheetKind(sheet)] }))
+    .map((sheet, i) => ({ sheet, i, rank: RANK[rowKind(sheet)] }))
     .sort((a, b) => a.rank - b.rank || a.i - b.i)
     .map(x => x.sheet);
 }
@@ -99,12 +107,15 @@ const withoutSheet = (params: URLSearchParams) => {
   return next;
 };
 
-const BADGE: Record<SheetKind, string> = {
+const BADGE: Record<RowKind, string> = {
   fine: 'bg-leaf-wash text-leaf-ink',
   check: 'bg-sun-wash text-sun-ink',
   error: 'border-2 border-danger bg-white text-danger',
+  out: 'bg-ivory text-muted',
 };
-const STATUS_TEXT: Record<SheetKind, string> = { fine: 'text-leaf-text', check: 'text-sun-ink', error: 'text-danger' };
+const STATUS_TEXT: Record<RowKind, string> = {
+  fine: 'text-leaf-text', check: 'text-sun-ink', error: 'text-danger', out: 'text-muted',
+};
 
 export default function BatchPage({ me }: { me: Me }) {
   const { id = '' } = useParams();
@@ -130,6 +141,10 @@ function BatchResults({ id, me }: { id: string; me: Me }) {
   const [deleteError, setDeleteError] = useState('');
   const rows = useRef(new Map<string, HTMLButtonElement>());
   const searchRef = useRef<HTMLInputElement>(null);
+  // IGNITE: sheets can be corrected here, and the batch submitted.
+  const ignite = igniteOn(me);
+  // True while the correction form of the open sheet has unsaved changes.
+  const editingRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -153,16 +168,18 @@ function BatchResults({ id, me }: { id: string; me: Me }) {
 
   const sheets = data?.sheets;
   const questionCount = data?.test.question_count ?? 0;
+  const answerKey = data?.test.answer_key;
   const problems = useMemo(() => {
     const byId = new Map<string, Problem[]>();
-    (sheets || []).forEach(s => byId.set(s.id, problemsOf(s, questionCount)));
+    (sheets || []).forEach(s => byId.set(s.id, problemsOf(s, questionCount, answerKey)));
     return byId;
-  }, [sheets, questionCount]);
+  }, [sheets, questionCount, answerKey]);
   const ordered = useMemo(() => orderForTeacher(sheets || []), [sheets]);
-  const counts = useMemo(() => countKinds(sheets || []), [sheets]);
+  // A sheet left out is in no count, and only the "All" list shows it (last).
+  const counts = useMemo(() => countKinds(keptSheets(sheets || [])), [sheets]);
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase().replace(/\s+/g, ' ');
-    return ordered.filter(s => (show === 'all' || sheetKind(s) === show)
+    return ordered.filter(s => (show === 'all' || rowKind(s) === show)
       && (!q || sheetTitle(s).toLowerCase().includes(q) || rollNumber(s).toLowerCase().includes(q)));
   }, [ordered, show, query]);
 
@@ -211,7 +228,32 @@ function BatchResults({ id, me }: { id: string; me: Me }) {
     if (place?.next) goTo(place.next.id);
   }, [place, goTo]);
 
+  // IGNITE: a corrected sheet takes the place of the one in the list, and the batch's counts
+  // (to check, average, hands-on scores typed) are asked for again.
+  const batchSaved = useCallback((batch: Batch) => {
+    setData(d => (d ? { ...d, batch } : d));
+  }, []);
+  const sheetSaved = useCallback((saved: Sheet) => {
+    setData(d => (d ? { ...d, sheets: d.sheets.map(s => (s.id === saved.id ? saved : s)) } : d));
+    api.get<Batch>(`/api/batches/${id}`).then(batchSaved).catch(() => undefined);
+  }, [id, batchSaved]);
+  const loadedTest = data?.test;
+  const sentBy = data?.batch.submitted_at ? data.batch.submitted_by || 'someone' : '';
+  const fix = useMemo<FixContext | undefined>(() => {
+    if (!ignite || !loadedTest) return undefined;
+    return {
+      test: loadedTest,
+      me,
+      locked: sentBy && me.user.role !== 'admin' ? 'This batch was submitted. An admin can open it again.' : '',
+      onSaved: sheetSaved,
+      onEditing: (open: boolean) => {
+        editingRef.current = open;
+      },
+    };
+  }, [ignite, loadedTest, me, sentBy, sheetSaved]);
+
   const choose = (sheetId: string) => {
+    if (editingRef.current && sheetId !== open?.id && !window.confirm(LEAVE_SHEET)) return;
     if (wide) goTo(sheetId);
     // Phone: a new history entry, so the Back button closes the full screen sheet.
     else setParams(p => withSheet(p, sheetId), { state: { fromList: true } as ViewerState });
@@ -317,11 +359,14 @@ function BatchResults({ id, me }: { id: string; me: Me }) {
     batch.state_name || '',
     batch.name ? batch.test_name || test.name : '', // otherwise the title already names the test
     friendlyDate(batch.created_at),
-    plural(all.length, 'sheet'),
+    plural(keptSheets(all).length, 'sheet'),
     average == null ? '' : `average ${fmtScore(average)}${outOf}`,
     `checked by ${whoDid(batch.created_by, me.user)}`,
   ].filter(Boolean).join(' · ');
   const canDelete = me.user.role === 'admin' || batch.created_by === me.user.email;
+  // IGNITE: a box beside each student for the hands-on score, when the answer key takes one.
+  const canFix = ignite && !!fix && !fix.locked;
+  const handsOnMax = canFix ? test.hands_on_max ?? null : null;
 
   let nothingShown = '';
   if (visible.length === 0 && all.length > 0) {
@@ -344,6 +389,9 @@ function BatchResults({ id, me }: { id: string; me: Me }) {
           {/* break-words: a long name with no spaces wraps instead of pushing the page sideways */}
           <h1 id="batch-title" className="page-title break-words">{title}</h1>
           <p className="hint break-words">{summary}</p>
+          {ignite && all.length > 0 && (
+            <BatchIgniteCard batch={batch} test={test} sheets={all} me={me} onBatch={batchSaved} />
+          )}
 
           {all.length === 0 ? (
             <EmptyState title="No sheets in this batch"
@@ -392,24 +440,28 @@ function BatchResults({ id, me }: { id: string; me: Me }) {
               ) : (
                 <ul aria-label="Students" className="m-0 flex list-none flex-col gap-3 p-0">
                   {visible.map(s => {
-                    const kind = sheetKind(s);
+                    const kind = rowKind(s);
                     const isOpen = open?.id === s.id;
                     const roll = rollNumber(s);
                     // The line under the title says what the title does not: the roll number under a
                     // name, the file under a roll number, nothing under a file.
                     const where = studentName(s) ? (roll ? `Roll ${roll}` : sourceLabel(s)) : roll ? sourceLabel(s) : '';
-                    const status = kind === 'fine' ? 'Read fine'
-                      : kind === 'check' ? checkSummary(problems.get(s.id) || []) : 'Could not read';
-                    const badge = kind === 'error' ? '!' : fmtScore(s.score);
+                    const status = kind === 'out' ? 'Left out of the results'
+                      : kind === 'fine' ? (s.entered_by_hand ? 'Typed in by hand' : s.confirmed_by ? 'Checked' : 'Read fine')
+                        : kind === 'check' ? checkSummary(problems.get(s.id) || []) : 'Could not read';
+                    // IGNITE: a flagged sheet also says what to do with it, while it can still be changed.
+                    const todo = !canFix ? '' : kind === 'error' ? 'Open it to type it in.'
+                      : kind === 'check' ? 'Open it to confirm or correct.' : '';
+                    const badge = kind === 'error' ? '!' : s.status === 'error' ? '–' : fmtScore(s.score);
                     return (
-                      <li key={s.id}>
+                      <li key={s.id} className="flex items-stretch gap-2">
                         <button type="button" onClick={() => choose(s.id)} aria-current={isOpen ? 'true' : undefined}
                           ref={el => {
                             if (el) rows.current.set(s.id, el);
                             else rows.current.delete(s.id);
                           }}
                           className={classNames(
-                            'flex w-full items-center gap-3.5 rounded-2xl border-2 bg-white px-[18px] py-3.5 text-left',
+                            'flex w-full min-w-0 items-center gap-3.5 rounded-2xl border-2 bg-white px-[18px] py-3.5 text-left',
                             isOpen ? 'border-coral' : 'border-line hover:border-brand',
                           )}>
                           <span aria-hidden="true"
@@ -429,12 +481,16 @@ function BatchResults({ id, me }: { id: string; me: Me }) {
                             </span>
                             <span className="break-words text-[15px] leading-[22px] text-muted">
                               {where && `${where} · `}
-                              <span className={classNames('font-semibold', STATUS_TEXT[kind])}>{status}</span>
+                              <span className={classNames('font-semibold', STATUS_TEXT[kind])}>{status}{todo && !status.endsWith('.') && '.'}</span>
+                              {todo && ` ${todo}`}
                             </span>
                           </span>
-                          {kind !== 'error' && <span className="sr-only">, score {fmtScore(s.score)}{outOf}</span>}
+                          {s.status !== 'error' && <span className="sr-only">, score {fmtScore(s.score)}{outOf}</span>}
                           <IconChevronRight size={22} className="shrink-0 text-brand lg:hidden" />
                         </button>
+                        {handsOnMax !== null && s.status === 'ok' && !s.left_out && (
+                          <HandsOnBox sheet={s} max={handsOnMax} who={sheetTitle(s)} onSaved={sheetSaved} />
+                        )}
                       </li>
                     );
                   })}
@@ -442,7 +498,9 @@ function BatchResults({ id, me }: { id: string; me: Me }) {
               )}
 
               <div className="flex flex-col gap-1.5 pt-1">
-                <a href={`/api/batches/${batch.id}/results.xlsx`} className="btn btn-primary w-full">
+                {/* IGNITE: submitting is the main step, so the download is the quieter button. */}
+                <a href={`/api/batches/${batch.id}/results.xlsx`}
+                  className={classNames('btn w-full', ignite ? 'btn-secondary' : 'btn-primary')}>
                   <IconDownload />
                   Download for Google Sheets
                 </a>
@@ -468,14 +526,14 @@ function BatchResults({ id, me }: { id: string; me: Me }) {
         {wide && open && place && (
           <div className="min-w-0 flex-1 self-start lg:sticky lg:top-6">
             <SheetViewer mode="panel" sheet={open} test={test} batch={batch} me={me} maxScore={maxScore} {...place}
-              layouts={layouts} onPrev={goPrev} onNext={goNext} />
+              layouts={layouts} onPrev={goPrev} onNext={goNext} fix={fix} />
           </div>
         )}
       </div>
 
       {!wide && open && place && (
         <SheetViewer mode="screen" sheet={open} test={test} batch={batch} me={me} maxScore={maxScore} {...place}
-          layouts={layouts} onPrev={goPrev} onNext={goNext} onClose={close} />
+          layouts={layouts} onPrev={goPrev} onNext={goNext} onClose={close} fix={fix} />
       )}
     </div>
   );

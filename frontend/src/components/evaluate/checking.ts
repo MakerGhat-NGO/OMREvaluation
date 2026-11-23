@@ -258,15 +258,21 @@ export async function startChecking(testId: string): Promise<void> {
 
   // A batch chosen from the list is used as it is. A new one is made now, and stays chosen, so the
   // next sheets ("Check more sheets") go into it too.
+  // IGNITE: the school details typed on the screen go with the batch, a new one or one from the list.
+  const details = session.sendDetails ? session.details : null;
+  const cannotStart = (e: unknown) => {
+    updateSession({ run: null, startError: `Could not start checking: ${withFullStop(reasonText(e))}` });
+    return null;
+  };
   let batch: Pick<Batch, 'id'> | null = batchId === NEW_BATCH ? null : { id: batchId };
   if (!batch) {
-    batch = await api.post<Batch>('/api/batches', { test_id: testId, state_id: stateId || null, name: newBatchName.trim() })
-      .catch((e: unknown) => {
-        updateSession({ run: null, startError: `Could not start checking: ${withFullStop(reasonText(e))}` });
-        return null;
-      });
+    batch = await api.post<Batch>('/api/batches', {
+      test_id: testId, state_id: stateId || null, name: newBatchName.trim(), ...(details || {}),
+    }).catch(cannotStart);
     if (!batch) return;
     updateSession({ batchId: batch.id, newBatchName: '' });
+  } else if (details) {
+    if (!(await api.patch<Batch>(`/api/batches/${batch.id}`, details).catch(cannotStart))) return;
   }
 
   progress.batchId = batch.id;

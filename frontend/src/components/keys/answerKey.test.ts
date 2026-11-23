@@ -1,7 +1,7 @@
 import { ApiError, Test } from '../../lib/api';
 import {
-  checkDraft, choicesLabel, clearedText, draftFrom, fillAnswers, firstAnswers, missingQuestions, missingText, parseCount,
-  payloadOf, problemFromError, readQuickFill, sameDraft, stillOpen,
+  checkDraft, choicesLabel, clearedText, draftFrom, fillAnswers, firstAnswers, fitsChoices, missingQuestions, missingText,
+  parseCount, payloadOf, problemFromError, readQuickFill, sameDraft, stillOpen, tidyAnswer,
 } from './answerKey';
 
 const stored = (over: Partial<Test> = {}): Test => ({
@@ -22,6 +22,17 @@ describe('starting a draft', () => {
     expect(d.answers).toEqual({ q1: 'A', q2: 'B', q4: 'D' });
     expect(d.marksWrong).toBe('-0.25');
     expect(draftFrom(stored({ question_count: 80 }), 50).count).toBe(50);
+  });
+
+  test('a stored key keeps questions with more than one right answer', () => {
+    const d = draftFrom(stored({ answer_key: { q1: 'cb', q2: 'D/A', q3: 'AE', q4: 'BB', q5: 'C' } }), 50);
+    // Tidied into the order of the sheet; a letter that is no choice, or a repeated one, is dropped.
+    expect(d.answers).toEqual({ q1: 'BC', q2: 'A/D', q5: 'C' });
+    expect(payloadOf(d).answer_key).toEqual({ q1: 'BC', q2: 'A/D', q5: 'C' });
+    expect(tidyAnswer(' b / c ', 'ABCD')).toBe('B/C');
+    expect(tidyAnswer('B/', 'ABCD')).toBe('B');
+    expect(fitsChoices('B/E', 'ABCD')).toBe(false);
+    expect(fitsChoices('BD', 'ABCD')).toBe(true);
   });
 
   test('changes are noticed, and undoing them is not a change', () => {

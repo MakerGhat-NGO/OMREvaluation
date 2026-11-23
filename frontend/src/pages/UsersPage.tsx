@@ -3,11 +3,13 @@
 import classNames from 'classnames';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { IconRefresh } from '../components/Icons';
+import SelectBox from '../components/SelectBox';
 import UsersSkeleton from '../components/skeletons/UsersSkeleton';
 import { useToast } from '../components/Toast';
 import { Notice } from '../components/ui';
 import { api, ApiError, Me, User } from '../lib/api';
 import { capitalise, displayName, friendlyDate } from '../lib/format';
+import { igniteOn } from '../lib/ignite';
 
 type Role = User['role'];
 type ChangeKind = 'approve' | 'not-now' | 'turn-off' | 'turn-on' | 'role';
@@ -211,7 +213,8 @@ export default function UsersPage({ me }: { me: Me }) {
           ) : (
             <ul aria-labelledby={EVERYONE_ID} className="m-0 flex flex-col gap-4 p-0">
               {everyone.map(u => (
-                <PersonRow key={u.id} user={u} isMe={u.id === me.user.id} saving={saving[u.id]} error={errors[u.id]}
+                <PersonRow key={u.id} user={u} isMe={u.id === me.user.id} plainLists={!igniteOn(me)}
+                  saving={saving[u.id]} error={errors[u.id]}
                   onRole={role => changeRole(u, role)} onTurnOff={() => turnOff(u)} onTurnOn={() => turnOn(u)}
                   onDismissError={() => dismissError(u.id)} />
               ))}
@@ -255,8 +258,10 @@ function PendingCard({ user, saving, error, onApprove, onNotNow, onDismissError 
 }
 
 /** One approved or turned-off person: name and email, their role, and a button to turn the account off or on. */
-function PersonRow({ user, isMe, saving, error, onRole, onTurnOff, onTurnOn, onDismissError }: {
+function PersonRow({ user, isMe, plainLists, saving, error, onRole, onTurnOff, onTurnOn, onDismissError }: {
   user: User; isMe: boolean; saving?: Saving; error?: string;
+  /** The role list is the browser's own, as before (the new look is switched off). */
+  plainLists: boolean;
   onRole: (role: Role) => void; onTurnOff: () => void; onTurnOn: () => void; onDismissError: () => void;
 }) {
   const name = displayName(user);
@@ -273,13 +278,12 @@ function PersonRow({ user, isMe, saving, error, onRole, onTurnOff, onTurnOn, onD
       </div>
       {/* On phones this group wraps under the name. */}
       <div className="flex flex-wrap items-center gap-3">
-        <select id={controlId(user.id, 'role')} className="select select-small w-auto min-w-[140px]"
+        <SelectBox id={controlId(user.id, 'role')} plain={plainLists} className="select select-small"
+          wrapClassName="w-auto min-w-[140px]"
           aria-label={`Role for ${name}`} aria-describedby={isMe ? youId : undefined}
           value={saving?.role ?? user.role} disabled={isMe || !!saving}
-          onChange={e => onRole(e.target.value as Role)}>
-          <option value="teacher">Teacher</option>
-          <option value="admin">Admin</option>
-        </select>
+          onChange={v => onRole(v as Role)}
+          options={[{ value: 'teacher', label: 'Teacher' }, { value: 'admin', label: 'Admin' }]} />
         {isMe ? (
           <span id={youId} className="hint">This is you</span>
         ) : off ? (

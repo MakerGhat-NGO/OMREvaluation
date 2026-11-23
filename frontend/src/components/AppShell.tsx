@@ -8,17 +8,19 @@ import { ReactNode, useEffect, useRef, useState } from 'react';
 import { Link, NavLink, useLocation } from 'react-router-dom';
 import { User } from '../lib/api';
 import { displayName, initialOf } from '../lib/format';
-import { IconChart, IconChevronDown, IconKey, IconSignOut, IconUpload, IconUsers } from './Icons';
+import { IconChart, IconChevronDown, IconDashboard, IconKey, IconSignOut, IconUpload, IconUsers } from './Icons';
 import { Avatar, Logo } from './ui';
 
 export const SIGN_OUT_URL = '/.auth/logout?post_logout_redirect_uri=/';
 
-interface Tab { to: string; label: string; title: string; Icon: typeof IconUpload; adminOnly?: boolean; }
+interface Tab { to: string; label: string; title: string; Icon: typeof IconUpload; adminOnly?: boolean; igniteOnly?: boolean; }
 
 export const TABS: Tab[] = [
   { to: '/evaluate', label: 'Check', title: 'Check sheets', Icon: IconUpload },
   { to: '/tests', label: 'Keys', title: 'Answer keys', Icon: IconKey },
   { to: '/batches', label: 'Results', title: 'Results', Icon: IconChart },
+  // IGNITE: the numbers the dashboard shows. Only where the server has the feature on.
+  { to: '/ignite', label: 'IGNITE', title: 'IGNITE data', Icon: IconDashboard, adminOnly: true, igniteOnly: true },
   { to: '/users', label: 'Users', title: 'Users', Icon: IconUsers, adminOnly: true },
 ];
 
@@ -82,9 +84,9 @@ function AccountMenu({ user }: { user: User }) {
   );
 }
 
-export default function AppShell({ user, children }: { user: User; children: ReactNode }) {
+export default function AppShell({ user, ignite = false, children }: { user: User; ignite?: boolean; children: ReactNode }) {
   const { pathname } = useLocation();
-  const tabs = TABS.filter(t => !t.adminOnly || user.role === 'admin');
+  const tabs = TABS.filter(t => (!t.adminOnly || user.role === 'admin') && (!t.igniteOnly || ignite));
   const title = titleFor(pathname);
 
   useEffect(() => {

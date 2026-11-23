@@ -273,16 +273,45 @@ def load_pages(data: bytes, filename: str) -> List[np.ndarray]:
     return [img]
 
 
+# A key's answer for one question is written in one of three ways:
+#   "B"    one right answer
+#   "BC"   B and C must both be filled (and nothing else)
+#   "B/C"  B or C: either one alone is right
+ANY_ONE = "/"
+
+
+def key_letters(correct: str) -> str:
+    """The letters of a key's answer, without the mark that says "any one of them"."""
+    return (correct or "").replace(ANY_ONE, "")
+
+
+def needs_all(correct: str) -> bool:
+    """True when the key asks for several bubbles to be filled for this question."""
+    return ANY_ONE not in (correct or "") and len(key_letters(correct)) > 1
+
+
+def is_right(marked: str, correct: str) -> bool:
+    """Whether what a student filled for one question earns its marks."""
+    marked = (marked or "").strip()
+    letters = key_letters(correct)
+    if not marked or not letters:
+        return False
+    if ANY_ONE in correct:
+        return len(marked) == 1 and marked in letters
+    return sorted(marked) == sorted(letters)
+
+
 def score_answers(answers: Dict[str, str], answer_key: Dict[str, str],
                   marks_correct: float = 1, marks_incorrect: float = 0,
                   marks_unmarked: float = 0) -> float:
-    """Marks for each question in the key. A double-marked question counts as incorrect."""
+    """Marks for each question in the key. Two bubbles filled count as incorrect, unless the key
+    asks for exactly those two (see is_right)."""
     total = 0.0
     for q, correct in answer_key.items():
         marked = (answers.get(q) or "").strip()
         if marked == "":
             total += marks_unmarked
-        elif marked == correct:
+        elif is_right(marked, correct):
             total += marks_correct
         else:
             total += marks_incorrect
@@ -439,15 +468,19 @@ class Engine:
         return {label: [round(b[0] / page_w, 4), round(b[1] / page_h, 4), round(b[2] / page_w, 4), round(b[3] / page_h, 4)]
                 for label, b in spans.items() if label in wanted}
 
-    def read(self, page: np.ndarray, name: str = "sheet", questions: Optional[Iterable[str]] = None) -> SheetResult:
+    def read(self, page: np.ndarray, name: str = "sheet", questions: Optional[Iterable[str]] = None,
+             several_ok: Iterable[str] = ()) -> SheetResult:
         """Reads one page. `questions` are the labels of the questions this test has (q1..q25,
         say): a stray mark in a question beyond them is not worth a teacher's look, so it is
         read and recorded but does not flag the sheet. All of the sheet's questions by default.
-        Never raises for a bad sheet; returns ok=False instead."""
+        `several_ok` are the questions whose key asks for more than one bubble: two marks there
+        are an answer, not something to look at. Never raises for a bad sheet; returns ok=False
+        instead."""
         with self._lock:
-            return self._read(page, name, questions)
+            return self._read(page, name, questions, set(several_ok))
 
-    def _read(self, page: np.ndarray, name: str, questions: Optional[Iterable[str]] = None) -> SheetResult:
+    def _read(self, page: np.ndarray, name: str, questions: Optional[Iterable[str]] = None,
+              several_ok: frozenset = frozenset()) -> SheetResult:
         ops = self.template.image_instance_ops
         ops.reset_all_save_img()
         try:
@@ -478,7 +511,7 @@ class Engine:
         wanted = set(self.question_labels if questions is None else questions)
         doubled = [k for k, v in raw.items()
                    if str(v).strip() and str(v) not in self._single_values.get(k, {str(v)})]
-        doubles = sorted((q for q in doubled if QUESTION_RE.match(q) and q in wanted),
+        doubles = sorted((q for q in doubled if QUESTION_RE.match(q) and q in wanted and q not in several_ok),
                          key=lambda q: int(QUESTION_RE.match(q).group(1)))
         if doubles:
             reasons.append("two bubbles filled for " + ", ".join(doubles[:5]) + (" ..." if len(doubles) > 5 else ""))
@@ -510,7 +543,8 @@ class Engine:
 
     def evaluate(self, page: np.ndarray, answer_key: Dict[str, str], name: str = "sheet",
                  marks_correct: float = 1, marks_incorrect: float = 0, marks_unmarked: float = 0) -> SheetResult:
-        result = self.read(page, name, questions=answer_key.keys())
+        result = self.read(page, name, questions=answer_key.keys(),
+                           several_ok=[q for q, correct in answer_key.items() if needs_all(correct)])
         if result.ok:
             result.score = score_answers(result.answers, answer_key, marks_correct, marks_incorrect, marks_unmarked)
         return result

@@ -38,5 +38,10 @@ class Settings:
     MAX_UPLOAD_BYTES = int(os.environ.get("OMR_MAX_UPLOAD_MB", "25")) * 1024 * 1024
     SECRET_KEY = os.environ.get("SECRET_KEY", "dev-only-not-secret")
 
+    # The IGNITE additions: school details on a batch, correcting a reading, Submit, skills and
+    # hands-on scores. Off unless IGNITE_ENABLED is set, so this code can be deployed without
+    # changing what anyone sees; the new columns stay empty until it is turned on.
+    IGNITE_ENABLED = os.environ.get("IGNITE_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+
 
 settings = Settings()

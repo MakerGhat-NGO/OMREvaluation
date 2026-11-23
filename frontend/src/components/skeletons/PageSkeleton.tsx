@@ -7,6 +7,7 @@ import { Skeleton } from '../ui';
 import BatchesSkeleton from './BatchesSkeleton';
 import BatchSkeleton from './BatchSkeleton';
 import EvaluateSkeleton from './EvaluateSkeleton';
+import IgniteSkeleton from './IgniteSkeleton';
 import TestsSkeleton from './TestsSkeleton';
 import UsersSkeleton from './UsersSkeleton';
 
@@ -52,6 +53,17 @@ export default function PageSkeleton({ path }: { path: string }) {
         <p className="page-title">Users</p>
         <p className="hint">Teachers sign up on the sign-in page with their email. Approve them here and they can start checking sheets.</p>
         <UsersSkeleton />
+      </div>
+    );
+  }
+  if (path === '/ignite') {
+    return (
+      <div aria-hidden="true" className="page flex flex-col gap-5">
+        <div className="flex flex-col gap-2">
+          <p className="page-title">IGNITE data</p>
+          <p className="hint">The numbers the dashboard shows. Nothing changes on the dashboard until you press Publish.</p>
+        </div>
+        <IgniteSkeleton />
       </div>
     );
   }

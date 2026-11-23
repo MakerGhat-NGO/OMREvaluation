@@ -3,7 +3,7 @@
 import classNames from 'classnames';
 import { KeyboardEvent as ReactKeyboardEvent, useId } from 'react';
 import { Sheet, Test } from '../../lib/api';
-import { AnswerKind, answerKind, lettersText } from '../../lib/sheets';
+import { AnswerKind, answerKind, keyText, lettersText } from '../../lib/sheets';
 
 /** 'free': the answer key has no answer for this question, so it does not count. */
 export type CellKind = AnswerKind | 'free';
@@ -14,7 +14,8 @@ export interface AnswerCell {
   n: number;
   /** '' when blank, 'A', or 'CD' when two bubbles are filled. */
   marked: string;
-  /** '' when the answer key has no answer for this question. */
+  /** The key's answer: 'B', 'BC' (both must be filled) or 'B/C' (either one is right). '' when the
+   *  answer key has no answer for this question. */
   correct: string;
   kind: CellKind;
 }
@@ -69,10 +70,10 @@ function moveWithArrows(e: ReactKeyboardEvent<HTMLDivElement>) {
 
 /** What a screen reader says for one square. */
 function cellLabel(c: AnswerCell): string {
-  const key = c.correct ? ` The right answer is ${c.correct}.` : ` ${NOT_COUNTED}`;
+  const key = c.correct ? ` The right answer is ${keyText(c.correct)}.` : ` ${NOT_COUNTED}`;
   switch (c.kind) {
-    case 'right': return `Question ${c.n}: marked ${c.marked}, right.`;
-    case 'wrong': return `Question ${c.n}: marked ${c.marked}, wrong.${key}`;
+    case 'right': return `Question ${c.n}: marked ${lettersText(c.marked)}, right.`;
+    case 'wrong': return `Question ${c.n}: marked ${lettersText(c.marked)}, wrong.${key}`;
     case 'blank': return `Question ${c.n}: blank.${key}`;
     case 'multi': return `Question ${c.n}: ${lettersText(c.marked)} ${filledWord(c.marked)} filled.${key}`;
     default: return `Question ${c.n}: ${c.marked ? `marked ${c.marked}` : 'blank'}.${key}`;
@@ -82,11 +83,11 @@ function cellLabel(c: AnswerCell): string {
 /** The line under the grid for the question the teacher picked (after "Question 3:"). */
 function cellDetail(c: AnswerCell): string {
   switch (c.kind) {
-    case 'right': return `marked ${c.marked}. That is the right answer.`;
-    case 'wrong': return `marked ${c.marked}. The right answer is ${c.correct}.`;
-    case 'blank': return `blank. The right answer is ${c.correct}.`;
+    case 'right': return `marked ${lettersText(c.marked)}. That is the right answer.`;
+    case 'wrong': return `marked ${lettersText(c.marked)}. The right answer is ${keyText(c.correct)}.`;
+    case 'blank': return `blank. The right answer is ${keyText(c.correct)}.`;
     case 'multi': return c.correct
-      ? `${lettersText(c.marked)} are ${filledWord(c.marked)} filled, so it counts as wrong. The right answer is ${c.correct}.`
+      ? `${lettersText(c.marked)} are ${filledWord(c.marked)} filled, so it counts as wrong. The right answer is ${keyText(c.correct)}.`
       : `${lettersText(c.marked)} are ${filledWord(c.marked)} filled. ${NOT_COUNTED}`;
     default: return `${c.marked ? `marked ${c.marked}` : 'blank'}. ${NOT_COUNTED}`;
   }

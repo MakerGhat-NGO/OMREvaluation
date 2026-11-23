@@ -115,6 +115,23 @@ def test_double_marked_sheet_is_flagged(client):
     assert s["answers"]["q15"] == "CD" and s["score"] == 38
 
 
+def test_a_key_can_ask_for_two_bubbles_or_accept_either_one(client):
+    # On this sheet question 15 has C and D filled.
+    both = make_test(client, name="Both", answer_key={**key_dict(), "q15": "DC"})
+    assert both["answer_key"]["q15"] == "CD"            # kept in the order of the sheet
+    s = upload(client, make_batch(client, both["id"], name="Both 7A")["id"], "double_marked.jpg")[0]
+    assert "q15" not in s["review_reason"] and s["score"] == 39   # the two marks are the answer
+
+    either = make_test(client, name="Either", answer_key={**key_dict(), "q15": "D/C"})
+    assert either["answer_key"]["q15"] == "C/D"
+    s = upload(client, make_batch(client, either["id"], name="Either 7A")["id"], "double_marked.jpg")[0]
+    assert "q15" in s["review_reason"] and s["score"] == 38       # there, two marks are still wrong
+
+    for bad in ("CC", "C/", "CD/E", "C/Z", "/"):
+        r = client.post("/api/tests", json={"name": "x", "answer_key": {"q1": bad}}, headers=ADMIN)
+        assert r.status_code == 400 and "q1" in r.json["error"], bad
+
+
 def test_unreadable_image_is_reported_not_crashed(client):
     import numpy as np, cv2
     t = make_test(client)

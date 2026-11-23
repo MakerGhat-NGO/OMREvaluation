@@ -30,11 +30,44 @@ export function sheetTitle(s: Sheet): string {
   return studentName(s) || (roll ? `Roll ${roll}` : sourceLabel(s));
 }
 
+// A key's answer for one question is written in one of three ways (the server's rule, omr/engine.py):
+//   "B"    one right answer
+//   "BC"   B and C must both be filled, and nothing else
+//   "B/C"  B or C: either one alone is right
+export const ANY_ONE = '/';
+
+/** The letters of a key's answer, without the mark that says "any one of them". */
+export const keyLetters = (correct: string | undefined) => (correct || '').split(ANY_ONE).join('');
+/** True when any one of the key's letters is right ("B/C"). */
+export const anyOneIsRight = (correct: string | undefined) => (correct || '').includes(ANY_ONE);
+/** True when the key asks for several bubbles to be filled ("BC"). */
+export const needsAll = (correct: string | undefined) => !anyOneIsRight(correct) && keyLetters(correct).length > 1;
+
+/** Whether what a student filled for one question earns its marks. */
+export function isRight(marked: string | undefined, correct: string | undefined): boolean {
+  const m = (marked || '').trim();
+  const letters = keyLetters(correct);
+  if (!m || !letters) return false;
+  if (anyOneIsRight(correct)) return m.length === 1 && letters.includes(m);
+  return m.split('').sort().join('') === letters.split('').sort().join('');
+}
+
+/** The key's answer in a sentence: "B", "B or C", "B and C together". */
+export function keyText(correct: string | undefined): string {
+  const letters = keyLetters(correct).split('');
+  if (letters.length <= 1) return letters[0] || '';
+  const start = `${letters.slice(0, -1).join(', ')}`;
+  const last = letters[letters.length - 1];
+  return anyOneIsRight(correct) ? `${start} or ${last}` : `${start} and ${last} together`;
+}
+
 export function answerKind(marked: string | undefined, correct: string | undefined): AnswerKind {
   const m = (marked || '').trim();
   if (!m) return 'blank';
-  if (m.length > 1) return 'multi';
-  return m === correct ? 'right' : 'wrong';
+  if (isRight(m, correct)) return 'right';
+  // More than one mark where the key wants one answer: it counts as wrong and is worth a look.
+  if (m.length > 1 && !needsAll(correct)) return 'multi';
+  return 'wrong';
 }
 
 /** "CD" -> "C and D", "ACD" -> "A, C and D". */
@@ -53,11 +86,12 @@ export interface Problem {
 }
 
 /** Everything a teacher should look at on a sheet that was read but flagged. */
-export function problemsOf(s: Sheet, questionCount: number): Problem[] {
+export function problemsOf(s: Sheet, questionCount: number, answerKey?: Record<string, string>): Problem[] {
   if (s.status !== 'ok') return [];
   const out: Problem[] = [];
+  // Two marks are no problem where the key asks for several bubbles: there they are the answer.
   const doubles = Object.entries(s.answers || {})
-    .filter(([q, v]) => /^q\d+$/.test(q) && (v || '').trim().length > 1)
+    .filter(([q, v]) => /^q\d+$/.test(q) && (v || '').trim().length > 1 && !needsAll(answerKey?.[q]))
     .sort((a, b) => qNumber(a[0]) - qNumber(b[0]));
   for (const [q, v] of doubles) {
     const n = qNumber(q);

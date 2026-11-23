@@ -4,12 +4,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { IconPencil, IconPlus, IconRefresh } from '../components/Icons';
 import { problemFromError } from '../components/keys/answerKey';
+import SkillsEditor, { skillsSummary } from '../components/ignite/SkillsEditor';
 import KeyEditor, { LEAVE_MESSAGE } from '../components/keys/KeyEditor';
 import { KeyUse, Usage, usageFrom, usageOf, usedByText } from '../components/keys/usage';
 import TestsSkeleton from '../components/skeletons/TestsSkeleton';
 import { EmptyState, Notice } from '../components/ui';
 import { api, Batch, Me, Test } from '../lib/api';
 import { friendlyDate, plural, whoDid } from '../lib/format';
+import { igniteOn } from '../lib/ignite';
 
 /** openId while a new key is being written. */
 const NEW = 'new';
@@ -60,6 +62,9 @@ export default function TestsPage({ me }: { me: Me }) {
   const [loadRound, setLoadRound] = useState(0);
   // The key whose editor is open, NEW for a new key, or null.
   const [openId, setOpenId] = useState<string | null>(null);
+  // IGNITE: the key whose skills an admin is setting, or null.
+  const canSetSkills = igniteOn(me) && me.user.role === 'admin';
+  const [skillsId, setSkillsId] = useState<string | null>(null);
   // Whether the open editor has unsaved changes, and whether it is saving or archiving.
   // Refs: they are only read when someone clicks.
   const dirtyRef = useRef(false);
@@ -117,6 +122,7 @@ export default function TestsPage({ me }: { me: Me }) {
     if (openId === id || busyRef.current) return;
     if (dirtyRef.current && !window.confirm(LEAVE_MESSAGE)) return;
     dirtyRef.current = false;
+    setSkillsId(null);
     setOpenId(id);
   }
 
@@ -151,7 +157,7 @@ export default function TestsPage({ me }: { me: Me }) {
   }
 
   const editorFor = (test: Test | null) => (
-    <KeyEditor test={test} maxQuestions={maxQuestions}
+    <KeyEditor test={test} maxQuestions={maxQuestions} allowSeveral={igniteOn(me)}
       usedBy={test ? usageFor(test) : undefined}
       onDirtyChange={setDirty}
       onBusyChange={setBusy}
@@ -196,6 +202,17 @@ export default function TestsPage({ me }: { me: Me }) {
               {openId === t.id
                 ? editorFor(t)
                 : <KeyCard test={t} meta={keyMeta(t, usageFor(t), me)} onOpen={() => openEditor(t.id)} />}
+              {canSetSkills && openId !== t.id && (skillsId === t.id ? (
+                <SkillsEditor test={t} onCancel={() => setSkillsId(null)}
+                  onSaved={saved => {
+                    setTests(list => list && list.map(x => (x.id === saved.id ? saved : x)));
+                    setSkillsId(null);
+                  }} />
+              ) : (
+                <button type="button" className="btn btn-quiet btn-small mt-1.5" onClick={() => setSkillsId(t.id)}>
+                  For the dashboard: {skillsSummary(t)}
+                </button>
+              ))}
             </li>
           ))}
         </ul>

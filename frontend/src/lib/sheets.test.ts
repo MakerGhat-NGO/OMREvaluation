@@ -1,5 +1,8 @@
 import { Sheet } from './api';
-import { answerKind, checkSummary, countKinds, errorText, lettersText, problemsOf, sheetKind, sheetTitle, sourceLabel, studentName } from './sheets';
+import {
+  answerKind, checkSummary, countKinds, errorText, isRight, keyText, lettersText, needsAll, problemsOf, sheetKind, sheetTitle,
+  sourceLabel, studentName,
+} from './sheets';
 
 const sheet = (over: Partial<Sheet> = {}): Sheet => ({
   id: 's1', batch_id: 'b1', source_name: 'class7.pdf', page_no: 2, status: 'ok', error_reason: '',
@@ -35,6 +38,35 @@ describe('answers', () => {
     expect(answerKind('B', 'A')).toBe('wrong');
     expect(answerKind('', 'A')).toBe('blank');
     expect(answerKind('CD', 'D')).toBe('multi');
+  });
+
+  test('a key can ask for two bubbles, or take either of two', () => {
+    // "BC": both must be filled, and nothing else.
+    expect(isRight('BC', 'BC')).toBe(true);
+    expect(isRight('CB', 'BC')).toBe(true);
+    expect(isRight('B', 'BC')).toBe(false);
+    expect(isRight('BCD', 'BC')).toBe(false);
+    expect(answerKind('BC', 'BC')).toBe('right');
+    expect(answerKind('B', 'BC')).toBe('wrong');
+    expect(answerKind('BD', 'BC')).toBe('wrong');      // two marks are an answer there, not a slip
+    // "B/C": either one alone.
+    expect(isRight('B', 'B/C')).toBe(true);
+    expect(isRight('C', 'B/C')).toBe(true);
+    expect(isRight('D', 'B/C')).toBe(false);
+    expect(answerKind('BC', 'B/C')).toBe('multi');     // both filled still counts as wrong
+    expect(needsAll('BC')).toBe(true);
+    expect(needsAll('B/C')).toBe(false);
+    expect(needsAll('B')).toBe(false);
+    expect(keyText('B')).toBe('B');
+    expect(keyText('B/C')).toBe('B or C');
+    expect(keyText('BCD')).toBe('B, C and D together');
+  });
+
+  test('two marks are no problem where the key asks for them', () => {
+    const s = sheet({ needs_review: false, answers: { q1: 'A', q15: 'CD' } });
+    expect(problemsOf(s, 50)).toHaveLength(1);
+    expect(problemsOf(s, 50, { q15: 'CD' })).toEqual([]);
+    expect(problemsOf(s, 50, { q15: 'C/D' })).toHaveLength(1);
   });
 
   test('letters in words', () => {

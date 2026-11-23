@@ -2,14 +2,16 @@
 // The same viewer sits beside the list on wide screens (mode "panel") and covers the whole screen
 // on phones and tablets (mode "screen": a dialog closed by its back button, Escape or Back).
 import classNames from 'classnames';
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Batch, Me, Sheet, sheetImageUrl, Test } from '../lib/api';
 import { fmtScore, friendlyDate, whoDid } from '../lib/format';
+import { dayText } from '../lib/ignite';
 import {
   FIELD, gender, mobileNumber, Problem, problemsOf, rollNumber, sheetKind, sheetTitle, sourceLabel, studentName,
 } from '../lib/sheets';
 import { IconChevronLeft, IconChevronRight } from './Icons';
+import { FixContext, LEAVE_SHEET, useSheetFix } from './ignite/SheetFix';
 import AnswerGrid, { AnswerCell, answerCells } from './sheet/AnswerGrid';
 import SheetNotice, { hasNotice } from './sheet/SheetNotice';
 import SheetPicture, { PictureKind } from './sheet/SheetPicture';
@@ -40,6 +42,8 @@ export interface SheetViewerProps {
   onNext: () => void;
   /** Screen mode: back to the list. */
   onClose?: () => void;
+  /** IGNITE: given when sheets can be corrected here (the feature is switched on). */
+  fix?: FixContext;
 }
 
 const KNOWN_FIELDS: string[] = [FIELD.name, FIELD.roll, FIELD.mobile, FIELD.gender];
@@ -79,13 +83,31 @@ function detailRows(sheet: Sheet, test: Test, batch?: Batch, me?: Me): [string, 
     ['Mobile number', mobileNumber(sheet) || none],
     ['Gender', gender(sheet) || none],
     ...otherFields(sheet),
+    // IGNITE: shown once they are typed (the hands-on score whenever the answer key takes one).
+    ...(test.hands_on_max != null
+      ? [['Activity score', sheet.hands_on_score == null ? none : `${fmtScore(sheet.hands_on_score)} of ${fmtScore(test.hands_on_max)}`] as [string, string]]
+      : []),
     ['State', batch?.state_name || none],
+    ...([['District', batch?.district], ['Block', batch?.block], ['School', batch?.school], ['Grade', batch?.grade],
+      ['Date of the test', dayText(batch?.assessed_on)]].filter(row => row[1]) as [string, string][]),
     ['Batch', batch?.name || none],
     ['Answer key', test.name],
     ['Scan', sourceLabel(sheet)],
     ['Checked', [when, who && `by ${who}`].filter(Boolean).join(' ') || none],
+    ...(sheet.entered_by_hand ? [['Reading', 'Typed in by hand'] as [string, string]] : []),
   ];
 }
+
+/** IGNITE: the details that are about the student. They stay in view under the picture; the rest
+ *  (where the sheet is filed, who checked it) sits under "More about this sheet". */
+const STUDENT_DETAILS = ['Name', 'Roll number', 'Gender', 'Activity score'];
+
+const detailItem = ([label, value]: [string, string]) => (
+  <div key={label} className="min-w-0">
+    <dt className="text-muted">{label}</dt>
+    <dd className="m-0 break-words font-semibold text-heading">{value}</dd>
+  </div>
+);
 
 function pictureAlt(sheet: Sheet, view: PictureKind): string {
   const name = studentName(sheet);
@@ -100,13 +122,14 @@ function pictureAlt(sheet: Sheet, view: PictureKind): string {
  *  phone turned sideways, a zoomed-in laptop) a pinned notice would leave almost no room for the
  *  sheet, so there it scrolls with the sheet, as in the panel. Only one of the two copies is shown;
  *  the hidden one (display: none) is not read out either. */
-function SheetBody({ sheet, problems, cells, layout, screen, details }: {
+function SheetBody({ sheet, problems, cells, layout, screen, details, fix }: {
   sheet: Sheet;
   problems: Problem[];
   cells: AnswerCell[];
   layout: LayoutResult;
   screen: boolean;
   details: [string, string][];
+  fix?: FixContext;
 }) {
   const [view, setView] = useState<PictureKind>(sheet.has_checked_image ? 'checked' : 'input');
   const [selected, setSelected] = useState<string | null>(null);
@@ -119,11 +142,15 @@ function SheetBody({ sheet, problems, cells, layout, screen, details }: {
   );
   const canFindAnswers = !!boxes && cells.some(c => boxes[c.label]);
 
-  const select = (label: string | null) => {
+  const select = useCallback((label: string | null) => {
     setSelected(label);
     // The answer can only be boxed on the marked picture, so show it when the teacher looks for one.
     if (label && boxes && boxes[label] && sheet.has_checked_image) setView('checked');
-  };
+  }, [boxes, sheet.has_checked_image]);
+  // IGNITE: the buttons and the form that correct this sheet. While the form is open the grid
+  // shows the answers as typed so far.
+  const fixing = useSheetFix(sheet, fix, selected, select);
+  const shownCells = fixing.cells || cells;
 
   const notice = <SheetNotice sheet={sheet} problems={problems} boxCount={yellowShown} centred={screen} />;
   const fullScreenNotice = screen && hasNotice(sheet, problems);
@@ -136,22 +163,40 @@ function SheetBody({ sheet, problems, cells, layout, screen, details }: {
         </div>
       )}
       <div data-scroll-area className={classNames('min-h-0 flex-1 overflow-y-auto', screen && 'overscroll-contain')}>
-        <div className={classNames(screen && 'mx-auto w-full max-w-[760px]', cells.length === 0 && 'pb-5')}>
+        <div className={classNames(screen && 'mx-auto w-full max-w-[760px]', shownCells.length === 0 && 'pb-5')}>
           {screen ? fullScreenNotice && <div className="hidden [@media(max-height:500px)]:block">{notice}</div> : notice}
-          {/* What was read from the sheet and where it is filed, before the picture. */}
-          <dl aria-label="Sheet details"
-            className="m-0 grid grid-cols-2 gap-x-5 gap-y-2.5 border-b border-line px-5 py-3.5 text-[15px] leading-[22px] sm:grid-cols-3">
-            {details.map(([label, value]) => (
-              <div key={label} className="min-w-0">
-                <dt className="text-muted">{label}</dt>
-                <dd className="m-0 break-words font-semibold text-heading">{value}</dd>
-              </div>
-            ))}
-          </dl>
+          {fixing.top}
+          {/* What was read from the sheet and where it is filed, before the picture. While the sheet
+              is being corrected the form above has these, so the picture stays close to it. */}
+          {!fix && !fixing.editing && (
+            <dl aria-label="Sheet details"
+              className="m-0 grid grid-cols-2 gap-x-5 gap-y-2.5 border-b border-line px-5 py-3.5 text-[15px] leading-[22px] sm:grid-cols-3">
+              {details.map(detailItem)}
+            </dl>
+          )}
           <SheetPicture sheet={sheet} view={view} onViewChange={setView} layout={layout} problemLabels={problemLabels}
             selected={selected} showTapHint={canFindAnswers} alt={pictureAlt(sheet, view)} panel={!screen}
             onYellowBoxes={setYellowShown} />
-          {cells.length > 0 && <AnswerGrid cells={cells} selected={selected} onSelect={select} compact={screen} />}
+          {shownCells.length > 0 && <AnswerGrid cells={shownCells} selected={selected} onSelect={select} compact={screen} />}
+          {fixing.afterAnswers}
+          {/* IGNITE: the picture comes straight after the notice and the buttons, so the teacher sees
+              the sheet while deciding. The student's own details follow it; where the sheet is filed
+              and who checked it (the same for the whole batch) open on request. */}
+          {fix && !fixing.editing && (
+            <div className="border-t border-line text-[15px] leading-[22px]">
+              <dl aria-label="Student details" className="m-0 grid grid-cols-2 gap-x-5 gap-y-2.5 px-5 py-3.5 sm:grid-cols-4">
+                {details.filter(([label]) => STUDENT_DETAILS.includes(label)).map(detailItem)}
+              </dl>
+              <details className="border-t border-line px-5 py-1">
+                <summary className="flex min-h-[44px] cursor-pointer items-center font-semibold text-brand hover:text-brand-dark">
+                  More about this sheet
+                </summary>
+                <dl aria-label="Sheet details" className="m-0 grid grid-cols-2 gap-x-5 gap-y-2.5 pb-3 pt-1 sm:grid-cols-3">
+                  {details.filter(([label]) => !STUDENT_DETAILS.includes(label)).map(detailItem)}
+                </dl>
+              </details>
+            </div>
+          )}
         </div>
       </div>
     </>
@@ -159,14 +204,27 @@ function SheetBody({ sheet, problems, cells, layout, screen, details }: {
 }
 
 export default function SheetViewer({
-  mode, sheet, test, batch, me, maxScore, position, total, prev, next, layouts, onPrev, onNext, onClose,
+  mode, sheet, test, batch, me, maxScore, position, total, prev, next, layouts, onPrev, onNext, onClose, fix,
 }: SheetViewerProps) {
   const screen = mode === 'screen';
+  // IGNITE: while the correction form is open, moving to another sheet would drop what was typed.
+  const [editing, setEditing] = useState(false);
+  const tellPage = fix?.onEditing;
+  const onEditing = useCallback((open: boolean) => {
+    setEditing(open);
+    tellPage?.(open);
+  }, [tellPage]);
+  const bodyFix = useMemo(() => (fix ? { ...fix, onEditing } : undefined), [fix, onEditing]);
+  const closeAsked = () => {
+    if (editing && !window.confirm(LEAVE_SHEET)) return;
+    onClose?.();
+  };
   const headingId = useId();
   const headingRef = useRef<HTMLHeadingElement>(null);
   const { load, layoutOf } = layouts;
 
-  const problems = useMemo(() => problemsOf(sheet, test.question_count), [sheet, test.question_count]);
+  const problems = useMemo(() => problemsOf(sheet, test.question_count, test.answer_key),
+    [sheet, test.question_count, test.answer_key]);
   const cells = useMemo(() => (sheet.status === 'ok' ? answerCells(sheet, test) : []), [sheet, test]);
   const details = useMemo(() => detailRows(sheet, test, batch, me), [sheet, test, batch, me]);
 
@@ -212,6 +270,7 @@ export default function SheetViewer({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      if (editing) return;
       if (e.key === 'Escape') {
         if (screen && onClose) {
           e.preventDefault();
@@ -235,7 +294,7 @@ export default function SheetViewer({
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [screen, onClose, prev, next, onPrev, onNext]);
+  }, [screen, onClose, prev, next, onPrev, onNext, editing]);
 
   const kind = sheetKind(sheet);
   const title = sheetTitle(sheet);
@@ -249,7 +308,7 @@ export default function SheetViewer({
       screen ? 'px-3 py-2.5 [@media(max-height:500px)]:py-1.5' : 'px-5 py-3.5')}>
       <div className={inner(classNames('flex items-center', screen ? 'gap-2.5' : 'gap-3'))}>
         {screen && (
-          <button type="button" onClick={onClose} aria-label="Back to the list"
+          <button type="button" onClick={closeAsked} aria-label="Back to the list"
             className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-ivory text-brand hover:bg-coral-wash">
             <IconChevronLeft size={22} />
           </button>
@@ -264,7 +323,9 @@ export default function SheetViewer({
           </h2>
           <p className="m-0 break-words text-[14px] leading-5 text-muted">{detailsLine(sheet, position, total)}</p>
         </div>
-        {kind === 'error' ? (
+        {sheet.left_out ? (
+          <span className="pill tone-neutral shrink-0">Left out</span>
+        ) : kind === 'error' ? (
           <span className="pill tone-error shrink-0">Could not read</span>
         ) : (
           <p className="m-0 shrink-0 whitespace-nowrap font-display font-bold leading-none text-heading">
@@ -293,11 +354,11 @@ export default function SheetViewer({
   const footer = screen ? (
     <div className="shrink-0 border-t border-line bg-white px-4 pb-[max(18px,env(safe-area-inset-bottom))] pt-2.5 [@media(max-height:500px)]:pb-[max(6px,env(safe-area-inset-bottom))] [@media(max-height:500px)]:pt-1.5">
       <div className={inner('flex gap-2')}>
-        <button type="button" aria-label="Previous sheet" disabled={!prev} onClick={onPrev}
+        <button type="button" aria-label="Previous sheet" disabled={!prev || editing} onClick={onPrev}
           className="inline-flex h-14 w-14 shrink-0 items-center justify-center rounded-full border-2 border-line bg-white text-brand hover:border-brand disabled:cursor-not-allowed disabled:text-muted disabled:opacity-60 disabled:hover:border-line [@media(max-height:500px)]:h-12 [@media(max-height:500px)]:w-12">
           <IconChevronLeft />
         </button>
-        <button type="button" disabled={!next} onClick={onNext}
+        <button type="button" disabled={!next || editing} onClick={onNext}
           className="btn btn-primary min-h-[56px] min-w-0 flex-1 px-5 [@media(max-height:500px)]:min-h-[48px]">
           {nextLabel}
         </button>
@@ -305,11 +366,11 @@ export default function SheetViewer({
     </div>
   ) : (
     <div className="flex shrink-0 gap-2.5 border-t border-line px-5 pb-5 pt-4">
-      <button type="button" disabled={!prev} onClick={onPrev} className="btn btn-secondary min-w-0 flex-1 px-4">
+      <button type="button" disabled={!prev || editing} onClick={onPrev} className="btn btn-secondary min-w-0 flex-1 px-4">
         <IconChevronLeft size={20} className="shrink-0" />
         Previous
       </button>
-      <button type="button" disabled={!next} onClick={onNext} className="btn btn-primary min-w-0 flex-1 px-4">
+      <button type="button" disabled={!next || editing} onClick={onNext} className="btn btn-primary min-w-0 flex-1 px-4">
         {nextLabel}
       </button>
     </div>
@@ -319,7 +380,7 @@ export default function SheetViewer({
     <>
       {header}
       <SheetBody key={sheet.id} sheet={sheet} problems={problems} cells={cells} layout={layoutOf(sheet)} screen={screen}
-        details={details} />
+        details={details} fix={bodyFix} />
       {footer}
       {/* Tells screen reader users which sheet is open after Previous, Next or an arrow key. */}
       <p aria-live="polite" className="sr-only">{`Sheet ${position} of ${total}: ${title}`}</p>

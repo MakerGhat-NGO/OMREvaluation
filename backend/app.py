@@ -19,6 +19,7 @@ sys.path.insert(0, str(BACKEND_DIR))
 
 from omr import Engine                      # noqa: E402
 from server.api import api                  # noqa: E402
+from server import ignite_api, ignite_data_api  # noqa: E402,F401  (add their routes to the api blueprint)
 from server.auth import load_current_user   # noqa: E402
 from server.config import settings          # noqa: E402
 from server.models import make_session_factory  # noqa: E402

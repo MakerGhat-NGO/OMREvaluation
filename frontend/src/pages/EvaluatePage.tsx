@@ -8,12 +8,16 @@ import { reasonText, startChecking, withFullStop } from '../components/evaluate/
 import ProgressCard from '../components/evaluate/ProgressCard';
 import ScansCard from '../components/evaluate/ScansCard';
 import {
-  batchChosen, getSession, NEW_BATCH, setBatchId, setNewBatch, setStateId, setTestId, sheetTotals, startOver, useSession,
+  batchChosen, getSession, NEW_BATCH, setBatchId, setDetails, setNewBatch, setStateId, setTestId, sheetTotals, startOver,
+  updateSession, useSession,
 } from '../components/evaluate/session';
+import DetailFields from '../components/ignite/DetailFields';
+import SelectBox from '../components/SelectBox';
 import EvaluateSkeleton from '../components/skeletons/EvaluateSkeleton';
 import { EmptyState, Notice } from '../components/ui';
-import { api, Batch, Me, State, Test } from '../lib/api';
+import { api, Batch, Me, Places, State, Test } from '../lib/api';
 import { capitalise, plural } from '../lib/format';
+import { addSchool, BatchDetails, detailsOf, guessDetails, igniteOn } from '../lib/ignite';
 
 const scrollBehavior = (): ScrollBehavior =>
   window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
@@ -67,7 +71,10 @@ function NewNameForm({ id, label, placeholder, addText, saving, error, onAdd, on
 
 export default function EvaluatePage({ me }: { me: Me }) {
   const session = useSession();
-  const { testId, stateId, batchId, newBatchName, files, run, startError } = session;
+  const { testId, stateId, batchId, newBatchName, files, run, startError, details } = session;
+  // IGNITE: the batch also says where and when the test was taken.
+  const ignite = igniteOn(me);
+  const [places, setPlaces] = useState<Places | null>(null);
   const [tests, setTests] = useState<Test[] | null>(null);
   const [states, setStates] = useState<State[] | null>(null);
   // The batches of the chosen test and state; null while they load.
@@ -136,6 +143,32 @@ export default function EvaluatePage({ me }: { me: Me }) {
     if (batches && batchId && batchId !== NEW_BATCH && !batches.some(b => b.id === batchId) && !getSession().run) setBatchId('');
   }, [batches, batchId]);
 
+  // IGNITE: the school details go with the batch only while the feature is on. The names typed on
+  // earlier batches are suggested; they are loaded again when checking has made a new batch.
+  useEffect(() => {
+    updateSession({ sendDetails: ignite });
+  }, [ignite]);
+  useEffect(() => {
+    if (!ignite) return undefined;
+    let cancelled = false;
+    api.get<Places>('/api/places')
+      .then(found => {
+        if (!cancelled) setPlaces(found);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [ignite, runBatchId]);
+  // A batch chosen from the list shows the details it already has, to add to or correct.
+  const listedBatch = (batches || []).find(b => b.id === batchId) || null;
+  const listedBatchId = listedBatch ? listedBatch.id : '';
+  useEffect(() => {
+    if (ignite && listedBatch && !getSession().run) updateSession({ details: detailsOf(listedBatch) });
+    // Only when another batch is chosen: what the teacher types afterwards stays.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ignite, listedBatchId]);
+
   // A file dropped outside the Scans card would make the browser open it and leave the tool.
   useEffect(() => {
     const guard = (e: DragEvent) => {
@@ -170,9 +203,29 @@ export default function EvaluatePage({ me }: { me: Me }) {
   const { counting, sheets } = sheetTotals(files);
   const noAnswers = test !== null && Object.keys(test.answer_key || {}).length === 0;
   const placed = stateId !== '' && batchChosen(session);
+  // IGNITE: every batch says which district and block it is from.
+  const detailsMissing = ignite && (details.district.trim() === '' || details.block.trim() === '');
   // While pages are being counted the button works (checking waits for the count). Once counted, at
   // least one sheet must open: a list of files that cannot be opened has nothing to check.
-  const canStart = test !== null && !noAnswers && placed && files.length > 0 && !locked && (counting || sheets > 0);
+  const canStart = test !== null && !noAnswers && placed && !detailsMissing && files.length > 0 && !locked
+    && (counting || sheets > 0);
+  // What the names of the scans say about the schools ("Name_G7_ZPPS Sunderpur_Malegaon.pdf"): the
+  // grade and block for the boxes still empty, and the schools not added yet.
+  const fromNames: Partial<BatchDetails> = {};
+  let newSchools: string[] = [];
+  if (ignite && !locked) {
+    const guess = guessDetails(files.map(f => f.file.name));
+    (['grade', 'block'] as const).forEach(key => {
+      if (guess[key] && details[key].trim() === '') fromNames[key] = guess[key];
+    });
+    const all = (guess.schools || []).reduce(addSchool, details.schools);
+    newSchools = all.slice(details.schools.length);
+    if (newSchools.length) fromNames.schools = all;
+  }
+  const fromNamesText = [
+    newSchools.length > 3 ? `${newSchools.slice(0, 3).join(', ')} and ${newSchools.length - 3} more schools` : newSchools.join(', '),
+    fromNames.block && `block ${fromNames.block}`, fromNames.grade && `grade ${fromNames.grade}`,
+  ].filter(Boolean).join(', ');
 
   let buttonLabel = 'Check sheets';
   if (checking) buttonLabel = 'Checking…';
@@ -279,14 +332,11 @@ export default function EvaluatePage({ me }: { me: Me }) {
       {tests && test && (
         <>
           <div className="card grid grid-cols-1 gap-4 md:grid-cols-2">
-            <label className="field min-w-0 md:col-span-2">
-              Which test?
-              <select className="select" value={test.id} disabled={locked} onChange={e => setTestId(e.target.value)}>
-                {tests.map(t => (
-                  <option key={t.id} value={t.id}>{t.name} ({plural(t.question_count, 'question')})</option>
-                ))}
-              </select>
-            </label>
+            <div className="field min-w-0 md:col-span-2">
+              <label htmlFor="test-choice">Which test?</label>
+              <SelectBox id="test-choice" plain={!ignite} value={test.id} disabled={locked} onChange={setTestId}
+                options={tests.map(t => ({ value: t.id, label: `${t.name} (${plural(t.question_count, 'question')})` }))} />
+            </div>
             {noAnswers && !locked && (
               <Notice tone="warn" className="md:col-span-2">
                 This answer key has no answers yet. <Link to="/tests" className="link">Add the right answers</Link> before
@@ -301,11 +351,9 @@ export default function EvaluatePage({ me }: { me: Me }) {
                   saving={savingState} error={addError} onAdd={addState} onCancel={closeNameBox} />
               ) : (
                 <div className="flex gap-2">
-                  <select id="state-choice" className="select min-w-0 flex-1" value={stateId} disabled={locked}
-                    onChange={e => setStateId(e.target.value)}>
-                    <option value="">{stateList.length === 0 ? 'No states yet' : 'Choose a state'}</option>
-                    {stateList.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                  </select>
+                  <SelectBox id="state-choice" plain={!ignite} wrapClassName="min-w-0 flex-1" value={stateId} disabled={locked}
+                    onChange={setStateId} placeholder={stateList.length === 0 ? 'No states yet' : 'Choose a state'}
+                    options={stateList.map(s => ({ value: s.id, label: s.name }))} />
                   <button type="button" className="btn btn-secondary shrink-0" disabled={locked} onClick={() => openNameBox('state')}>
                     New state
                   </button>
@@ -323,20 +371,19 @@ export default function EvaluatePage({ me }: { me: Me }) {
                   addText="Use this name" saving={false} error="" onAdd={addBatch} onCancel={closeNameBox} />
               ) : (
                 <div className="flex gap-2">
-                  <select id="batch-choice" className="select min-w-0 flex-1" value={batchId} disabled={locked || !stateId}
-                    onChange={e => setBatchId(e.target.value)}>
-                    {!stateId ? (
-                      <option value="">Choose a state first</option>
-                    ) : (
-                      <option value="">{batchList.length === 0 && batches !== null ? 'No batches yet' : 'Choose a batch'}</option>
-                    )}
-                    {batchId === NEW_BATCH && <option value={NEW_BATCH}>New: {newBatchName}</option>}
-                    {batchList.map(b => (
-                      <option key={b.id} value={b.id}>
-                        {b.name}{b.sheet_count > 0 ? ` (${plural(b.sheet_count, 'sheet')})` : ''}
-                      </option>
-                    ))}
-                  </select>
+                  <SelectBox id="batch-choice" plain={!ignite} wrapClassName="min-w-0 flex-1" value={batchId}
+                    disabled={locked || !stateId} onChange={setBatchId}
+                    placeholder={!stateId ? 'Choose a state first'
+                      : batchList.length === 0 && batches !== null ? 'No batches yet' : 'Choose a batch'}
+                    options={[
+                      ...(batchId === NEW_BATCH ? [{ value: NEW_BATCH, label: `New: ${newBatchName}` }] : []),
+                      // A submitted batch is with the admin: no sheets are added to it.
+                      ...batchList.map(b => ({
+                        value: b.id,
+                        label: `${b.name}${b.submitted_at ? ' (submitted)' : b.sheet_count > 0 ? ` (${plural(b.sheet_count, 'sheet')})` : ''}`,
+                        disabled: !!b.submitted_at,
+                      })),
+                    ]} />
                   <button type="button" className="btn btn-secondary shrink-0" disabled={locked || !stateId}
                     onClick={() => openNameBox('batch')}>
                     New batch
@@ -346,6 +393,24 @@ export default function EvaluatePage({ me }: { me: Me }) {
               <p className="hint font-normal">{batchHint}</p>
             </div>
           </div>
+
+          {ignite && (
+            <section aria-labelledby="details-title" className="card flex flex-col gap-4">
+              <div className="flex flex-col gap-1">
+                <h2 id="details-title" className="section-title">Where the test was taken</h2>
+                <p className="hint">The district and the block are needed. They go with every sheet of this batch.</p>
+              </div>
+              <DetailFields value={details} onChange={setDetails} places={places} stateId={stateId} disabled={locked} />
+              {fromNamesText && (
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                  <p className="hint min-w-0">The file names say: {fromNamesText}.</p>
+                  <button type="button" className="btn btn-secondary btn-small" onClick={() => setDetails(fromNames)}>
+                    Use these
+                  </button>
+                </div>
+              )}
+            </section>
+          )}
 
           <ScansCard files={files} locked={locked} finished={finished} />
 

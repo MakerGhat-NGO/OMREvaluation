@@ -11,7 +11,9 @@ interface AnswerGridProps {
   answers: Record<string, string>;
   /** Highlight the questions that have no answer yet. */
   showMissing: boolean;
-  onChange: (number: number, letter: string) => void;
+  /** Rows get a "+" that lets a question have more than one right answer. */
+  allowSeveral?: boolean;
+  onChange: (number: number, answer: string) => void;
   /** Id of the heading that names the grid. */
   labelledBy: string;
   containerRef?: Ref<HTMLDivElement>;
@@ -20,7 +22,9 @@ interface AnswerGridProps {
 /** Width of one row in rem: the 2rem number, a 0.375rem gap, then one 2.75rem button per letter, 0.375rem apart. */
 const rowRem = (letters: number) => 2 + 0.375 + letters * 2.75 + (letters - 1) * 0.375;
 
-export default function AnswerGrid({ count, options, answers, showMissing, onChange, labelledBy, containerRef }: AnswerGridProps) {
+export default function AnswerGrid({
+  count, options, answers, showMissing, allowSeveral = false, onChange, labelledBy, containerRef,
+}: AnswerGridProps) {
   // Arrow keys move between letters (left, right) and questions (up, down), so a keyboard user
   // does not have to Tab through every button. Tab still visits each one in question order.
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -50,12 +54,13 @@ export default function AnswerGrid({ count, options, answers, showMissing, onCha
       className="gap-8"
       // CSS columns, as many as fit a whole row (at most 3), so a row never squeezes or spills over:
       // three on a laptop, two on a tablet, one on a phone.
-      style={{ columns: `${rowRem(options.length)}rem 3` }}>
+      // The "+" at the end of a row is one more button.
+      style={{ columns: `${rowRem(options.length + (allowSeveral ? 1 : 0))}rem 3` }}>
       {numbers.map(n => {
         const value = answers[qLabel(n)] || '';
         return (
           <AnswerInput key={n} number={n} options={options} value={value} missing={showMissing && !value}
-            onChange={onChange} />
+            allowSeveral={allowSeveral} onChange={onChange} />
         );
       })}
     </div>

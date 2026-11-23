@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
-from typing import Dict, Optional
+from datetime import date, datetime, timezone
+from typing import Dict, List, Optional
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, Unicode, create_engine, event
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, Unicode, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, scoped_session, sessionmaker
 
 
@@ -74,6 +74,11 @@ class Test(Base):
     created_by: Mapped[str] = mapped_column(String(320))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    # IGNITE (both NULL until an admin sets them): which skill each question tests, as
+    # {"q1": "Scientific Reasoning", ...}, and the most a student can score in the hands-on
+    # activity. No hands_on_max means no hands-on score is asked for with this answer key.
+    skill_map_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    hands_on_max: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     batches: Mapped[list["Batch"]] = relationship(back_populates="test")
 
     @property
@@ -84,12 +89,16 @@ class Test(Base):
     def answer_key(self, value: Dict[str, str]) -> None:
         self.answer_key_json = json.dumps(value)
 
+    @property
+    def skill_map(self) -> Dict[str, str]:
+        return json.loads(self.skill_map_json or "{}")
+
     def to_dict(self) -> dict:
         return {"id": self.id, "name": self.name, "question_count": self.question_count, "options": self.options,
                 "marks_correct": self.marks_correct, "marks_incorrect": self.marks_incorrect,
                 "marks_unmarked": self.marks_unmarked, "answer_key": self.answer_key,
                 "created_by": self.created_by, "created_at": iso(self.created_at),
-                "archived": self.archived}
+                "archived": self.archived, "skill_map": self.skill_map, "hands_on_max": self.hands_on_max}
 
 
 class State(Base):
@@ -120,24 +129,59 @@ class Batch(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="open")         # open | finished
+    # IGNITE (all NULL on batches made without it): where and when the test was taken, typed by
+    # the teacher, and who sent the checked batch on to the admin, and when. students_reached is
+    # the admin's own figure; without one it is the number of sheets.
+    district: Mapped[Optional[str]] = mapped_column(Unicode(200), nullable=True)
+    block: Mapped[Optional[str]] = mapped_column(Unicode(200), nullable=True)
+    school: Mapped[Optional[str]] = mapped_column(Unicode(200), nullable=True)
+    # The schools at this session, as a JSON list: most tests are at a central place, with
+    # students from many schools (the team's answer 3). school then holds them joined, for
+    # reading; a batch from before the list has only school.
+    schools_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    grade: Mapped[Optional[str]] = mapped_column(Unicode(50), nullable=True)
+    assessed_on: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    students_reached: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    submitted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    submitted_by: Mapped[Optional[str]] = mapped_column(String(320), nullable=True)
+    # An admin keeps a submitted batch out of the dashboard's numbers.
+    dashboard_left_out: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     test: Mapped[Test] = relationship(back_populates="batches")
     state: Mapped[Optional[State]] = relationship(back_populates="batches")
     sheets: Mapped[list["Sheet"]] = relationship(back_populates="batch", cascade="all, delete-orphan")
+
+    @property
+    def schools(self) -> List[str]:
+        """The schools at this session; one for a batch from before the list, none when not typed."""
+        if self.schools_json:
+            return json.loads(self.schools_json)
+        return [self.school] if self.school else []
 
     def to_dict(self, with_counts: bool = True) -> dict:
         d = {"id": self.id, "test_id": self.test_id, "test_name": self.test.name if self.test else None,
              "state_id": self.state_id, "state_name": self.state.name if self.state else None,
              "name": self.name, "created_by": self.created_by,
              "created_at": iso(self.created_at),
-             "finished_at": iso(self.finished_at), "status": self.status}
+             "finished_at": iso(self.finished_at), "status": self.status,
+             "district": self.district or "", "block": self.block or "", "school": ", ".join(self.schools),
+             "schools": self.schools,
+             "grade": self.grade or "", "assessed_on": self.assessed_on.isoformat() if self.assessed_on else None,
+             "students_reached": self.students_reached,
+             "submitted_at": iso(self.submitted_at), "submitted_by": self.submitted_by or "",
+             "dashboard_left_out": bool(self.dashboard_left_out)}
         if with_counts:
-            d["sheet_count"] = len(self.sheets)
-            d["read_count"] = sum(1 for s in self.sheets if s.status == "ok")
-            d["review_count"] = sum(1 for s in self.sheets if s.status == "ok" and s.needs_review)
-            d["error_count"] = sum(1 for s in self.sheets if s.status == "error")
-            scores = [s.score for s in self.sheets if s.status == "ok" and s.score is not None]
+            # A sheet left out (a page scanned twice, a blank page) is in no count.
+            sheets = [s for s in self.sheets if not s.left_out]
+            d["sheet_count"] = len(sheets)
+            d["left_out_count"] = len(self.sheets) - len(sheets)
+            d["read_count"] = sum(1 for s in sheets if s.status == "ok")
+            d["review_count"] = sum(1 for s in sheets if s.status == "ok" and s.needs_review)
+            d["error_count"] = sum(1 for s in sheets if s.status == "error")
+            d["hands_on_count"] = sum(1 for s in sheets if s.hands_on_score is not None)
+            scores = [s.score for s in sheets if s.status == "ok" and s.score is not None]
             d["average_score"] = round(sum(scores) / len(scores), 1) if scores else None
             d["max_score"] = len(self.test.answer_key) * self.test.marks_correct if self.test else None
+            d["hands_on_max"] = self.test.hands_on_max if self.test else None
         return d
 
 
@@ -159,6 +203,19 @@ class Sheet(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     # Who checked this sheet (email). NULL on sheets checked before the column existed.
     created_by: Mapped[Optional[str]] = mapped_column(String(320), nullable=True, default="")
+    # IGNITE (all NULL on a sheet nobody has corrected). original_json is the first reading, kept
+    # from the first correction on; changes_json lists who changed what, and when. confirmed_* is
+    # the person who looked at a sheet that needed a check and said it is right now.
+    hands_on_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    original_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    changes_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    confirmed_by: Mapped[Optional[str]] = mapped_column(String(320), nullable=True)
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    entered_by_hand: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    left_out: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    # An admin marks the top students of a district for the dashboard.
+    top5: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    top1: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     batch: Mapped[Batch] = relationship(back_populates="sheets")
 
     @property
@@ -169,12 +226,146 @@ class Sheet(Base):
     def answers(self) -> Dict[str, str]:
         return json.loads(self.answers_json or "{}")
 
+    @property
+    def original(self) -> Optional[dict]:
+        return json.loads(self.original_json) if self.original_json else None
+
+    @property
+    def changes(self) -> List[dict]:
+        return json.loads(self.changes_json or "[]")
+
     def to_dict(self) -> dict:
-        return {"id": self.id, "batch_id": self.batch_id, "source_name": self.source_name, "page_no": self.page_no,
-                "status": self.status, "error_reason": self.error_reason, "fields": self.fields,
-                "answers": self.answers, "score": self.score, "needs_review": self.needs_review,
-                "review_reason": self.review_reason, "has_checked_image": bool(self.checked_path),
-                "created_at": iso(self.created_at), "created_by": self.created_by or ""}
+        d = {"id": self.id, "batch_id": self.batch_id, "source_name": self.source_name, "page_no": self.page_no,
+             "status": self.status, "error_reason": self.error_reason, "fields": self.fields,
+             "answers": self.answers, "score": self.score, "needs_review": self.needs_review,
+             "review_reason": self.review_reason, "has_checked_image": bool(self.checked_path),
+             "created_at": iso(self.created_at), "created_by": self.created_by or "",
+             "hands_on_score": self.hands_on_score, "left_out": bool(self.left_out),
+             "entered_by_hand": bool(self.entered_by_hand),
+             "confirmed_by": self.confirmed_by or "", "confirmed_at": iso(self.confirmed_at),
+             "top5": bool(self.top5), "top1": bool(self.top1)}
+        if self.original_json:
+            d["original"] = self.original
+        if self.changes_json:
+            d["changes"] = self.changes
+        return d
+
+
+# ---- IGNITE: what the dashboard shows that no scan can say ------------------------------------
+# The programme (districts and their blocks, with the figures the team types), the numbers the
+# dashboard had before the app fed it ("opening" numbers, taken once from the team's sheet), and
+# every set of numbers an admin has published. None of these tables holds a student's name.
+
+class IgniteDistrict(Base):
+    """One row of the state table of the dashboard."""
+    __tablename__ = "ignite_districts"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    state: Mapped[str] = mapped_column(Unicode(200), default="")
+    name: Mapped[str] = mapped_column(Unicode(200))
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    blocks_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    total_schools: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    grade: Mapped[Optional[str]] = mapped_column(Unicode(50), nullable=True)
+    total_students: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    target_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    blocks: Mapped[list["IgniteBlock"]] = relationship(back_populates="district", cascade="all, delete-orphan",
+                                                         order_by="IgniteBlock.position")
+    top_rows: Mapped[list["IgniteTopRow"]] = relationship(back_populates="district", cascade="all, delete-orphan",
+                                                           order_by="IgniteTopRow.position")
+
+
+class IgniteBlock(Base):
+    """One block of a district. opening_json holds the numbers from before the app fed the
+    dashboard; overrides_json a figure an admin typed over the worked-out one, with a note."""
+    __tablename__ = "ignite_blocks"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    district_id: Mapped[str] = mapped_column(ForeignKey("ignite_districts.id"), index=True)
+    name: Mapped[str] = mapped_column(Unicode(200))
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    total_schools: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    selected_schools: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    student_target: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    status: Mapped[Optional[str]] = mapped_column(Unicode(50), nullable=True)
+    opening_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    overrides_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    district: Mapped[IgniteDistrict] = relationship(back_populates="blocks")
+    # The schools the team had already counted in the opening number (answer 2): a batch at one
+    # of them adds no school, so a school visited again is not counted twice.
+    schools: Mapped[list["IgniteSchool"]] = relationship(back_populates="block", cascade="all, delete-orphan",
+                                                         order_by="IgniteSchool.position")
+
+    @property
+    def opening(self) -> dict:
+        return json.loads(self.opening_json or "{}")
+
+    @property
+    def overrides(self) -> dict:
+        return json.loads(self.overrides_json or "{}")
+
+
+class IgniteSchool(Base):
+    """A school of a block that the team's sheet had already counted, typed in by an admin."""
+    __tablename__ = "ignite_schools"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    block_id: Mapped[str] = mapped_column(ForeignKey("ignite_blocks.id"), index=True)
+    name: Mapped[str] = mapped_column(Unicode(200))
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    block: Mapped[IgniteBlock] = relationship(back_populates="schools")
+
+
+class IgniteDay(Base):
+    """A district's totals as published on a day (in India), for the weekly graph. The last
+    publish of a day is kept; a restore counts as a publish."""
+    __tablename__ = "ignite_days"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    day: Mapped[date] = mapped_column(Date, index=True)
+    district: Mapped[str] = mapped_column(Unicode(200))
+    schools_reached: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    students_reached: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    assessed: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class IgniteTopRow(Base):
+    """A top student from the team's sheet, as the dashboard shows one: no name, no school."""
+    __tablename__ = "ignite_top_rows"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    district_id: Mapped[str] = mapped_column(ForeignKey("ignite_districts.id"), index=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    gender: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    block: Mapped[Optional[str]] = mapped_column(Unicode(200), nullable=True)
+    percent: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    skills_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    band: Mapped[Optional[str]] = mapped_column(Unicode(50), nullable=True)
+    top5: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    top1: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    district: Mapped[IgniteDistrict] = relationship(back_populates="top_rows")
+
+    @property
+    def skills(self) -> dict:
+        return json.loads(self.skills_json or "{}")
+
+
+class IgniteSetting(Base):
+    """A setting of the programme, such as hands_on_max."""
+    __tablename__ = "ignite_settings"
+    key: Mapped[str] = mapped_column(String(50), primary_key=True)
+    value: Mapped[str] = mapped_column(Unicode(200), default="")
+
+
+class IgniteSnapshot(Base):
+    """The numbers as an admin published them. The dashboard reads the newest one."""
+    __tablename__ = "ignite_snapshots"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+    published_by: Mapped[str] = mapped_column(String(320))
+    note: Mapped[str] = mapped_column(Unicode(500), default="")
+    feed_json: Mapped[str] = mapped_column(Text)
+    restored_from: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+
+    def to_dict(self) -> dict:
+        return {"id": self.id, "published_at": iso(self.published_at), "published_by": self.published_by,
+                "note": self.note, "restored_from": self.restored_from or ""}
 
 
 def make_session_factory(database_url: str):

@@ -12,8 +12,9 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import selectinload
 from werkzeug.exceptions import HTTPException
 
-from omr import load_pages
+from omr import ANY_ONE, key_letters, load_pages
 from .auth import require_admin, require_user
+from .ignite import ignite_on, school_of, set_details, sheet_dict
 from .models import Batch, Sheet, State, Test, User, real_name
 
 api = Blueprint("api", __name__, url_prefix="/api")
@@ -45,7 +46,8 @@ def me():
         return jsonify({"signed_in": False}), 401
     return jsonify({"signed_in": True, "user": user.to_dict(),
                     "sheet": {"question_count": len(engine().question_labels),
-                              "field_labels": engine().field_labels}})
+                              "field_labels": engine().field_labels},
+                    "features": {"ignite": ignite_on()}})
 
 
 # ---- users (admin) -------------------------------------------------------------
@@ -97,12 +99,24 @@ def _validate_test(body, question_count_max):
     key = body.get("answer_key") or {}
     clean = {}
     for i in range(1, qn + 1):
-        v = (key.get(f"q{i}") or "").strip().upper()
-        if v and (len(v) != 1 or v not in options):
-            abort(400, f"answer for q{i} must be one of {options}")
+        v = re.sub(r"\s+", "", str(key.get(f"q{i}") or "")).upper()
         if v:
-            clean[f"q{i}"] = v
+            clean[f"q{i}"] = _key_answer(v, options) or abort(
+                400, f"answer for q{i} must use the letters {options}: one letter, several that must all be "
+                     f"filled (BC), or several of which any one is right (B/C)")
     return name, qn, options, clean
+
+
+def _key_answer(v: str, options: str) -> str:
+    """One question's answer in a key, tidied: "B", "BC" (both must be filled) or "B/C" (either
+    one is right), the letters in the order of the sheet. '' when it is none of these."""
+    letters = key_letters(v)
+    if not letters or any(ch not in options for ch in letters) or len(set(letters)) != len(letters):
+        return ""
+    if ANY_ONE in v and (len(letters) < 2 or v != ANY_ONE.join(letters)):
+        return ""
+    ordered = sorted(letters, key=options.index)
+    return (ANY_ONE if ANY_ONE in v else "").join(ordered)
 
 
 @api.get("/tests")
@@ -199,7 +213,8 @@ def _state_named(name):
 # Batch.to_dict counts each batch's sheets and averages their scores. Load just those columns of the
 # sheets of every batch asked for, in one query (not one query per batch, and not the long text
 # columns), and their answer keys and states in one more each.
-_BATCH_COUNTS = (selectinload(Batch.sheets).load_only(Sheet.status, Sheet.needs_review, Sheet.score),
+_BATCH_COUNTS = (selectinload(Batch.sheets).load_only(Sheet.status, Sheet.needs_review, Sheet.score, Sheet.left_out,
+                                                      Sheet.hands_on_score),
                  selectinload(Batch.test), selectinload(Batch.state))
 
 
@@ -233,8 +248,14 @@ def create_batch():
     same = (db().query(Batch).options(*_BATCH_COUNTS)
             .filter(Batch.test_id == test.id, Batch.state_id == (state.id if state else None)).all())
     if existing := next((b for b in same if b.name.lower() == name.lower()), None):
+        if ignite_on() and not existing.submitted_at:
+            # School details typed with more sheets for a batch fill in what it did not have yet.
+            set_details(existing, body, only_filled=True)
+            db().commit()
         return jsonify(existing.to_dict()), 200
     b = Batch(test_id=test.id, state_id=state.id if state else None, name=name, created_by=g.user.email)
+    if ignite_on():
+        set_details(b, body)
     db().add(b)
     db().commit()
     return jsonify(b.to_dict()), 201
@@ -274,6 +295,8 @@ def upload_sheet(batch_id):
     """One request per scanned page. The browser normally sends a shrunk JPEG; a PDF also works
     and every page of it is read."""
     b = db().get(Batch, batch_id) or abort(404)
+    if b.submitted_at:
+        abort(400, "this batch was submitted. Ask an admin to open it again, or make a new batch.")
     # Sheets can be added to a batch at any time: a new run of checking opens it again, and its
     # finish call closes it.
     b.status = "open"
@@ -356,7 +379,8 @@ def _ext(filename):
 def list_sheets(batch_id):
     b = db().get(Batch, batch_id) or abort(404)
     sheets = sorted(b.sheets, key=lambda s: (s.source_name, s.page_no))
-    return jsonify([s.to_dict() for s in sheets])
+    key, skills = b.test.answer_key, b.test.skill_map
+    return jsonify([sheet_dict(s, key, skills) for s in sheets])
 
 
 @api.get("/sheets/<sheet_id>/image")
@@ -391,9 +415,9 @@ def sheet_layout(sheet_id):
 # ---- results for Google Sheets and Excel ------------------------------------------------
 
 # The columns of the sheet the field team keeps results in (the "OMR format"), in its order. The
-# tool fills in what it knows from the batch and the scan; District, Block, Cluster, the date of
-# the assessment, the school, the grade and the hands-on score are written on the sheet by hand or
-# known to the team, so those columns are left empty for them to fill in.
+# tool fills in what it knows from the batch and the scan. District, Block, the date of the
+# assessment, the school, the grade and the hands-on score are filled in when they were typed in
+# the app (IGNITE); otherwise they, and Cluster always, are left empty for the team to fill in.
 EXPORT_COLUMNS = ["Sr No", "State", "District", "Block", "Cluster (if get)", "Date of assessment",
                   "Date of data entry", "Fellow/Team Member Name", "School Name", "Student Name",
                   "Roll number", "Mobile Number", "Gender", "Grade", "Hand-on Activity Score",
@@ -422,13 +446,16 @@ def _export_rows(b: Batch):
         return names.get(email) or email.split("@")[0]
 
     rows = []
-    for n, s in enumerate(sorted(b.sheets, key=lambda s: (s.source_name, s.page_no)), start=1):
+    kept = [s for s in b.sheets if not s.left_out]
+    for n, s in enumerate(sorted(kept, key=lambda s: (s.source_name, s.page_no)), start=1):
         f, a = s.fields, s.answers
         checked = s.created_at or b.created_at
         entered = (checked if checked.tzinfo else checked.replace(tzinfo=timezone.utc)).astimezone(INDIA).date()
-        rows.append([n, state, "", "", "", "", entered, person(s.created_by), "",
+        rows.append([n, state, b.district or "", b.block or "", "", b.assessed_on or "", entered,
+                     person(s.created_by), school_of(s, b),
                      (f.get("Name") or "").strip().title(), (f.get("Roll Number") or "").strip(),
-                     (f.get("Mobile Number") or "").strip(), (f.get("gender") or "").strip(), "", "",
+                     (f.get("Mobile Number") or "").strip(), (f.get("gender") or "").strip(), b.grade or "",
+                     "" if s.hands_on_score is None else s.hands_on_score,
                      "" if s.score is None else s.score]
                     + [a.get(k, "") for k in qlabels]
                     + ["yes" if s.needs_review or s.status == "error" else "",
@@ -484,9 +511,10 @@ def results_xlsx(batch_id):
         cell.font = Font(bold=True)
     for row in rows:
         ws.append(row)
-    date_column = header.index("Date of data entry") + 1
-    for row_no in range(2, len(rows) + 2):
-        ws.cell(row=row_no, column=date_column).number_format = "DD-MM-YYYY"
+    for title in ("Date of assessment", "Date of data entry"):
+        date_column = header.index(title) + 1
+        for row_no in range(2, len(rows) + 2):
+            ws.cell(row=row_no, column=date_column).number_format = "DD-MM-YYYY"
     widths = {"Sr No": 7, "State": 16, "District": 14, "Block": 14, "Cluster (if get)": 16, "Date of assessment": 18,
               "Date of data entry": 18, "Fellow/Team Member Name": 26, "School Name": 28, "Student Name": 28,
               "Roll number": 13, "Mobile Number": 15, "Gender": 10, "Grade": 8, "Hand-on Activity Score": 20,

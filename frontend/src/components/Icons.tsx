@@ -14,6 +14,9 @@ const Svg = ({ className, size = 24, strokeWidth = 2, children }: IconProps & { 
 export const IconUpload = (p: IconProps) => <Svg {...p}><path d="M12 16V4" /><path d="m6 10 6-6 6 6" /><path d="M4 20h16" /></Svg>;
 export const IconKey = (p: IconProps) => <Svg {...p}><circle cx="8" cy="15" r="4" /><path d="m10.9 12.1 9.1-9.1" /><path d="m17 6 3 3" /></Svg>;
 export const IconChart = (p: IconProps) => <Svg {...p}><path d="M4 20V10" /><path d="M10 20V4" /><path d="M16 20v-8" /><path d="M22 20H2" /></Svg>;
+export const IconDashboard = (p: IconProps) => (
+  <Svg {...p}><rect x="3" y="3" width="7" height="9" rx="1.5" /><rect x="14" y="3" width="7" height="5" rx="1.5" /><rect x="14" y="12" width="7" height="9" rx="1.5" /><rect x="3" y="16" width="7" height="5" rx="1.5" /></Svg>
+);
 export const IconUsers = (p: IconProps) => (
   <Svg {...p}><circle cx="9" cy="8" r="4" /><path d="M2 20c0-3.9 3.1-7 7-7s7 3.1 7 7" /><path d="M17 11a3 3 0 1 0 0-6" /><path d="M22 20c0-2.8-1.6-5.2-4-6.3" /></Svg>
 );
@@ -26,6 +29,7 @@ export const IconFolder = (p: IconProps) => <Svg {...p}><path d="M3 7h5l2 2h11v1
 export const IconCamera = (p: IconProps) => <Svg {...p}><path d="M4 8h3l2-3h6l2 3h3v11H4z" /><circle cx="12" cy="13" r="3.5" /></Svg>;
 export const IconWarning = (p: IconProps) => <Svg {...p}><path d="M12 3 2 20h20z" /><path d="M12 9v5" /><path d="M12 17h.01" /></Svg>;
 export const IconClock = (p: IconProps) => <Svg {...p}><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></Svg>;
+export const IconCalendar = (p: IconProps) => <Svg {...p}><rect x="3.5" y="5" width="17" height="15.5" rx="2.5" /><path d="M3.5 10h17M8 3v4M16 3v4" /></Svg>;
 export const IconCheck = (p: IconProps) => <Svg strokeWidth={2.5} {...p}><path d="m5 12 5 5L20 7" /></Svg>;
 export const IconPlus = (p: IconProps) => <Svg strokeWidth={2.5} {...p}><path d="M12 5v14M5 12h14" /></Svg>;
 export const IconMinus = (p: IconProps) => <Svg strokeWidth={2.5} {...p}><path d="M5 12h14" /></Svg>;

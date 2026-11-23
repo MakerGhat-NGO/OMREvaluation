@@ -6,11 +6,13 @@ import { ReactNode, RefObject, useCallback, useEffect, useId, useMemo, useRef, u
 import { api, Batch, Test } from '../../lib/api';
 import { capitalise, plural } from '../../lib/format';
 import { IconArchive, IconWarning } from '../Icons';
+import SelectBox from '../SelectBox';
 import { useToast } from '../Toast';
 import { Notice } from '../ui';
 import AnswerGrid from './AnswerGrid';
 import {
-  checkDraft, CHOICES, choicesLabel, clearedText, draftFrom, fillAnswers, firstAnswers, KeyDraft, MarksField,
+  checkDraft, CHOICES, choicesLabel, clearedText, draftFrom, fillAnswers, firstAnswers, fitsChoices, KeyDraft,
+  MarksField,
   missingQuestions, missingText, parseCount, payloadOf, Problem, problemFromError, qLabel, readQuickFill, sameDraft,
   stillOpen,
 } from './answerKey';
@@ -26,6 +28,8 @@ interface KeyEditorProps {
   maxQuestions: number;
   /** How many batches used this key, as far as the page knows. */
   usedBy?: KeyUse;
+  /** A question can be given more than one right answer (IGNITE). */
+  allowSeveral?: boolean;
   /** Tells the page whether there are unsaved changes, so it can ask before closing the editor. */
   onDirtyChange: (dirty: boolean) => void;
   /** Tells the page while a save or archive is on its way, so it keeps this editor open until it is done. */
@@ -69,7 +73,7 @@ const scrollBehavior = (): ScrollBehavior =>
   (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth');
 
 export default function KeyEditor({
-  test, maxQuestions: max, usedBy, onDirtyChange, onBusyChange, onCancel, onSaved, onArchived,
+  test, maxQuestions: max, usedBy, allowSeveral = false, onDirtyChange, onBusyChange, onCancel, onSaved, onArchived,
 }: KeyEditorProps) {
   const toast = useToast();
   const [initial] = useState(() => draftFrom(test, max));
@@ -242,13 +246,13 @@ export default function KeyEditor({
   function changeOptions(options: string) {
     const answers: Record<string, string> = {};
     Object.entries(draft.answers).forEach(([q, letter]) => {
-      if (options.includes(letter)) answers[q] = letter;
+      if (fitsChoices(letter, options)) answers[q] = letter;
       else removedAnswers.current[q] = letter;
     });
     // Changing back (an arrow key on the select, a slip of the mouse) brings the answers back,
     // unless the question has been given another answer meanwhile.
     Object.entries(removedAnswers.current).forEach(([q, letter]) => {
-      if (!answers[q] && options.includes(letter)) answers[q] = letter;
+      if (!answers[q] && fitsChoices(letter, options)) answers[q] = letter;
       if (answers[q]) delete removedAnswers.current[q];
     });
     setDraft({ ...draft, options, answers });
@@ -395,9 +399,7 @@ export default function KeyEditor({
             aria-describedby={describedBy(id('count'), true)} className="input" />
         </Field>
         <Field inputId={id('options')} label="Answer choices">
-          <select id={id('options')} value={draft.options} onChange={e => changeOptions(e.target.value)} className="select">
-            {choices.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
-          </select>
+          <SelectBox id={id('options')} plain={!allowSeveral} value={draft.options} onChange={changeOptions} options={choices} />
         </Field>
         {marksField('marksRight', 'Marks if right', rightRef)}
         {marksField('marksWrong', 'Marks if wrong', wrongRef, 'use a minus number to take marks off, e.g. -0.25')}
@@ -407,7 +409,10 @@ export default function KeyEditor({
       <div className="flex flex-col gap-4">
         <div className="flex flex-col gap-1">
           <h3 id={id('answers')} className="m-0 font-sans text-[17px] font-semibold leading-7 text-ink">Correct answers</h3>
-          <p className="hint">One row per question, like the printed sheet. Tap the right letter. Tap it again to clear it.</p>
+          <p className="hint">
+            One row per question, like the printed sheet. Tap the right letter. Tap it again to clear it.
+            {allowSeveral && ' If a question has more than one right answer, tap + at the end of its row.'}
+          </p>
         </div>
 
         <Field inputId={id('fill')} label="Or type all the answers in order" note="Spaces, commas and numbers are skipped."
@@ -447,7 +452,7 @@ export default function KeyEditor({
         )}
 
         <AnswerGrid containerRef={gridRef} count={draft.count} options={draft.options} answers={draft.answers}
-          showMissing={triedSave} onChange={setAnswer} labelledBy={id('answers')} />
+          showMissing={triedSave} allowSeveral={allowSeveral} onChange={setAnswer} labelledBy={id('answers')} />
       </div>
 
       {otherProblems.length > 0 && (

@@ -3,6 +3,7 @@
 // with sheets still to check. The search words and the chosen chip are kept in the address
 // (?q=...&show=...), so coming Back from one set of results shows the same list again. The
 // "All results" link on that page does the same (see resultsListPath).
+import classNames from 'classnames';
 import { Fragment, ReactNode, useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { IconChevronRight, IconSearch, IconUpload } from '../components/Icons';
@@ -10,6 +11,7 @@ import BatchesSkeleton from '../components/skeletons/BatchesSkeleton';
 import { Chip, EmptyState, LiveCount, Notice } from '../components/ui';
 import { api, ApiError, Batch, Me } from '../lib/api';
 import { capitalise, fmtScore, friendlyDate, isWithinDays, plural, whoDid } from '../lib/format';
+import { igniteOn } from '../lib/ignite';
 
 type Show = 'all' | 'mine' | 'check';
 
@@ -108,6 +110,25 @@ function BatchStats({ batch: b }: { batch: Batch }) {
   return <div className="text-[15px]">{dotted(parts)}</div>;
 }
 
+/** IGNITE: where a batch stands on its way to the admin, in a few words; null for a batch with no
+ *  sheets. The order is the order of the steps on the batch's own page. */
+export function batchStep(b: Batch): { text: string; tone: string } | null {
+  if (b.sheet_count === 0) return null;
+  if (b.submitted_at) return { text: `Submitted ${friendlyDate(b.submitted_at)}`, tone: 'tone-fine' };
+  const flagged = b.review_count + b.error_count;
+  if (flagged > 0) return { text: `${plural(flagged, 'sheet')} to check`, tone: 'tone-check' };
+  // With an activity score on the answer key, Submit waits for every score and the number of
+  // students in the hands-on challenge, as the batch's own steps say.
+  const asked = b.hands_on_max != null;
+  const noActivity = b.sheet_count - (b.hands_on_count ?? 0);
+  if (asked && noActivity > 0) return { text: `${plural(noActivity, 'activity score')} to type`, tone: 'tone-check' };
+  if (!b.district || !b.block) return { text: 'Add district and block', tone: 'tone-check' };
+  if (asked && (b.students_reached == null || b.students_reached < b.sheet_count)) {
+    return { text: 'Add students in the challenge', tone: 'tone-check' };
+  }
+  return { text: 'Ready to submit', tone: 'bg-coral-wash text-brand-dark' };
+}
+
 /** One set of checked sheets: a card that opens its results. */
 function BatchRow({ batch: b, me, onOpen }: { batch: Batch; me: Me; onOpen: (batchId: string) => void }) {
   const testName = (b.test_name || '').trim();
@@ -115,6 +136,7 @@ function BatchRow({ batch: b, me, onOpen }: { batch: Batch; me: Me; onOpen: (bat
   const about = [b.state_name || '', title === testName ? '' : testName, friendlyDate(b.created_at), whoDid(b.created_by || '', me.user)]
     .filter(Boolean)
     .join(' · ');
+  const step = igniteOn(me) ? batchStep(b) : null;
   return (
     <Link to={`/batches/${b.id}`} onClick={() => onOpen(b.id)}
       className="flex items-center gap-3.5 rounded-2xl border border-line bg-white px-[18px] py-4 text-ink no-underline transition-colors hover:border-brand">
@@ -123,6 +145,10 @@ function BatchRow({ batch: b, me, onOpen }: { batch: Batch; me: Me; onOpen: (bat
           <span className="min-w-0 break-words font-display text-[19px] font-semibold text-heading">{title}</span>
           {/* Checking was stopped part way (the tab was closed) or is still running. */}
           {b.status === 'open' && <span className="pill tone-neutral whitespace-nowrap leading-5">not finished</span>}
+          {/* IGNITE: where the batch stands on its way to the admin, so the next step shows in the list. */}
+          {step && b.status !== 'open' && (
+            <span className={classNames('pill whitespace-nowrap py-0.5 text-[14px] leading-5', step.tone)}>{step.text}</span>
+          )}
         </div>
         {about && <div className="break-words text-[15px] text-muted">{about}</div>}
         <BatchStats batch={b} />

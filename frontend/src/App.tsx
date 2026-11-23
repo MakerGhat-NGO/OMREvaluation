@@ -8,9 +8,11 @@ import { ToastProvider } from './components/Toast';
 import { SkeletonScreen } from './components/ui';
 import { api, ApiError, Me } from './lib/api';
 import { capitalise } from './lib/format';
+import { igniteOn } from './lib/ignite';
 import BatchPage from './pages/BatchPage';
 import BatchesPage from './pages/BatchesPage';
 import EvaluatePage from './pages/EvaluatePage';
+import IgnitePage from './pages/IgnitePage';
 import PendingPage from './pages/PendingPage';
 import TestsPage from './pages/TestsPage';
 import UsersPage from './pages/UsersPage';
@@ -68,7 +70,7 @@ function App() {
   return (
     <BrowserRouter>
       <ToastProvider>
-        <AppShell user={me.user}>
+        <AppShell user={me.user} ignite={igniteOn(me)}>
           <Routes>
             <Route path="/" element={<Navigate to="/evaluate" replace />} />
             <Route path="/evaluate" element={<EvaluatePage me={me} />} />
@@ -76,6 +78,7 @@ function App() {
             <Route path="/batches" element={<BatchesPage me={me} />} />
             <Route path="/batches/:id" element={<BatchPage me={me} />} />
             {me.user.role === 'admin' && <Route path="/users" element={<UsersPage me={me} />} />}
+            {me.user.role === 'admin' && igniteOn(me) && <Route path="/ignite" element={<IgnitePage me={me} />} />}
             <Route path="*" element={<Navigate to="/evaluate" replace />} />
           </Routes>
         </AppShell>
