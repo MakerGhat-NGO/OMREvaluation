@@ -267,6 +267,18 @@ def test_admin_sets_skills_and_hands_on_for_an_answer_key(client, teacher):
     # Saving the answer key again leaves the skills as they are.
     r = client.put(f"/api/tests/{t['id']}", json={"name": "Endline Nov"}, headers=ADMIN)
     assert r.status_code == 200 and r.json["skill_map"]["q1"] == "Logic" and r.json["hands_on_max"] == 5
+    # The pass mark of the hands-on challenge: 3 of 5 (the call on 25 November).
+    assert r.json["hands_on_pass"] is None
+    for wrong in (0, 6, "lots"):
+        assert client.put(f"/api/tests/{t['id']}/ignite", json={"hands_on_pass": wrong}, headers=ADMIN).status_code == 400
+    r = client.put(f"/api/tests/{t['id']}/ignite", json={"hands_on_pass": 3}, headers=ADMIN)
+    assert r.status_code == 200 and r.json["hands_on_pass"] == 3 and r.json["hands_on_max"] == 5
+    # A new maximum below the pass mark takes the pass mark away; both can be set at once.
+    assert client.put(f"/api/tests/{t['id']}/ignite", json={"hands_on_max": 2}, headers=ADMIN).json["hands_on_pass"] is None
+    r = client.put(f"/api/tests/{t['id']}/ignite", json={"hands_on_max": 15, "hands_on_pass": 9}, headers=ADMIN)
+    assert r.json["hands_on_max"] == 15 and r.json["hands_on_pass"] == 9
+    r = client.put(f"/api/tests/{t['id']}/ignite", json={"hands_on_max": 5, "hands_on_pass": 3}, headers=ADMIN)
+    assert r.json["hands_on_max"] == 5 and r.json["hands_on_pass"] == 3
 
     b = make_batch(client, t["id"])
     s = upload(client, b["id"], "filled_sheet.jpg")[0]
@@ -286,7 +298,8 @@ def test_admin_sets_skills_and_hands_on_for_an_answer_key(client, teacher):
     assert patch_sheet(client, s, teacher, hands_on_score=None).json["hands_on_score"] is None
     # No hands-on for this key any more, and no skills.
     r = client.put(f"/api/tests/{t['id']}/ignite", json={"skill_map": {}, "hands_on_max": None}, headers=ADMIN)
-    assert r.json["skill_map"] == {} and r.json["hands_on_max"] is None
+    assert r.json["skill_map"] == {} and r.json["hands_on_max"] is None and r.json["hands_on_pass"] is None
+    assert client.put(f"/api/tests/{t['id']}/ignite", json={"hands_on_pass": 3}, headers=ADMIN).status_code == 400
 
 
 # ---- submit ------------------------------------------------------------------------------
@@ -309,7 +322,11 @@ def test_a_batch_is_submitted_only_when_every_sheet_is_settled(client, teacher):
     patch_sheet(client, flagged, teacher, confirm=True)
     patch_sheet(client, unread, teacher, left_out=True)
     r = submit()
-    assert r.status_code == 400 and "district and the block" in r.json["error"]
+    assert r.status_code == 400 and "district and the block and the school" in r.json["error"]
+    # The fellows type the school (the call on 25 November): Submit waits for it too.
+    client.patch(f"/api/batches/{b['id']}", json={**DETAILS, "school": ""}, headers=teacher)
+    r = submit()
+    assert r.status_code == 400 and r.json["error"] == "add the school of this batch first"
     client.patch(f"/api/batches/{b['id']}", json=DETAILS, headers=teacher)
 
     r = submit()

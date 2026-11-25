@@ -13,7 +13,9 @@ interface Row { name: string; questions: string; }
 export function skillsSummary(test: Test): string {
   const skills = new Set(Object.values(test.skill_map || {})).size;
   const parts = [skills ? plural(skills, 'skill') : 'no skills yet'];
-  parts.push(test.hands_on_max != null ? `activity score out of ${fmtScore(test.hands_on_max)}` : 'no activity score');
+  parts.push(test.hands_on_max == null ? 'no activity score'
+    : `activity score out of ${fmtScore(test.hands_on_max)}`
+      + (test.hands_on_pass != null ? `, pass mark ${fmtScore(test.hands_on_pass)}` : ''));
   return parts.join(' · ');
 }
 
@@ -71,6 +73,9 @@ export default function SkillsEditor({ test, onSaved, onCancel }: {
   const [rows, setRows] = useState<Row[]>(() => rowsOf(test));
   const [handsOn, setHandsOn] = useState(test.hands_on_max != null);
   const [handsOnMax, setHandsOnMax] = useState(test.hands_on_max != null ? String(test.hands_on_max) : '5');
+  // A new activity score starts with the team's pass mark, 3 of 5 (the call on 25 November).
+  const [handsOnPass, setHandsOnPass] = useState(test.hands_on_pass != null ? String(test.hands_on_pass)
+    : test.hands_on_max == null ? '3' : '');
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState('');
 
@@ -92,10 +97,18 @@ export default function SkillsEditor({ test, onSaved, onCancel }: {
       setProblem('The hands-on score must be out of a number more than 0.');
       return;
     }
+    const least = Number(handsOnPass);
+    if (handsOn && handsOnPass.trim() !== '' && (Number.isNaN(least) || least <= 0 || least > most)) {
+      setProblem(`The pass mark must be more than 0 and at most ${fmtScore(most)}, or left empty.`);
+      return;
+    }
     setSaving(true);
     setProblem('');
     try {
-      onSaved(await api.put<Test>(`/api/tests/${test.id}/ignite`, { skill_map: result.map, hands_on_max: handsOn ? most : null }));
+      onSaved(await api.put<Test>(`/api/tests/${test.id}/ignite`, {
+        skill_map: result.map, hands_on_max: handsOn ? most : null,
+        hands_on_pass: handsOn && handsOnPass.trim() !== '' ? least : null,
+      }));
     } catch (e) {
       const said = e instanceof ApiError && e.status < 500 && e.status !== 401 ? capitalise(e.message) : '';
       setProblem(said ? `${said}.` : 'It could not be saved. Check your internet connection and try again.');
@@ -168,11 +181,18 @@ export default function SkillsEditor({ test, onSaved, onCancel }: {
           Students also get a hands-on activity score
         </label>
         {handsOn && (
-          <label className="field max-w-[340px]">
-            <span>Out of <span className="field-note">(the most one student can score)</span></span>
-            <input className="input" type="text" inputMode="decimal" maxLength={6} autoComplete="off" value={handsOnMax}
-              disabled={saving} onChange={e => setHandsOnMax(e.target.value)} />
-          </label>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:max-w-[700px]">
+            <label className="field min-w-0">
+              <span>Out of <span className="field-note">(the most one student can score)</span></span>
+              <input className="input" type="text" inputMode="decimal" maxLength={6} autoComplete="off" value={handsOnMax}
+                disabled={saving} onChange={e => setHandsOnMax(e.target.value)} />
+            </label>
+            <label className="field min-w-0">
+              <span>Pass mark <span className="field-note">(the least score to write the test; may be empty)</span></span>
+              <input className="input" type="text" inputMode="decimal" maxLength={6} autoComplete="off" value={handsOnPass}
+                disabled={saving} placeholder="e.g. 3" onChange={e => setHandsOnPass(e.target.value)} />
+            </label>
+          </div>
         )}
       </div>
 

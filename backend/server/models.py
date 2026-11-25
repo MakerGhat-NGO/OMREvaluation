@@ -79,6 +79,9 @@ class Test(Base):
     # activity. No hands_on_max means no hands-on score is asked for with this answer key.
     skill_map_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     hands_on_max: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # The least hands-on score that lets a student go on to the test (3 of 5, from the call on 25
+    # November). NULL means none is set. A paper below it is flagged, never refused.
+    hands_on_pass: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     batches: Mapped[list["Batch"]] = relationship(back_populates="test")
 
     @property
@@ -98,7 +101,8 @@ class Test(Base):
                 "marks_correct": self.marks_correct, "marks_incorrect": self.marks_incorrect,
                 "marks_unmarked": self.marks_unmarked, "answer_key": self.answer_key,
                 "created_by": self.created_by, "created_at": iso(self.created_at),
-                "archived": self.archived, "skill_map": self.skill_map, "hands_on_max": self.hands_on_max}
+                "archived": self.archived, "skill_map": self.skill_map, "hands_on_max": self.hands_on_max,
+                "hands_on_pass": self.hands_on_pass}
 
 
 class State(Base):

@@ -8,7 +8,7 @@ import classNames from 'classnames';
 import { ReactNode, useEffect, useState } from 'react';
 import { api, ApiError, Batch, Me, Places, Sheet, Test } from '../../lib/api';
 import { capitalise, fmtScore, friendlyDate, whoDid } from '../../lib/format';
-import { BatchDetails, batchSteps, dayText, detailsOf, flaggedText, keptSheets, noActivityText, schoolsText } from '../../lib/ignite';
+import { BatchDetails, batchSteps, belowPassText, dayText, detailsOf, flaggedText, keptSheets, noActivityText, schoolsText } from '../../lib/ignite';
 import { IconCheck, IconPencil } from '../Icons';
 import { Notice } from '../ui';
 import DetailFields from './DetailFields';
@@ -143,6 +143,7 @@ export default function BatchIgniteCard({ batch, test, sheets, me, onBatch }: {
   }
   // The hands-on scores: asked for only when the answer key takes one.
   const handsOnMax = kept.length > 0 ? test.hands_on_max ?? null : null;
+  const handsOnPass = handsOnMax != null ? test.hands_on_pass ?? null : null;
   const handsOnTyped = batch.hands_on_count ?? kept.filter(s => s.hands_on_score != null).length;
 
   const editButton = (label: string, quiet: boolean) => (
@@ -222,7 +223,7 @@ export default function BatchIgniteCard({ batch, test, sheets, me, onBatch }: {
     );
   }
 
-  const steps = batchSteps(batch, sheets, handsOnMax);
+  const steps = batchSteps(batch, sheets, handsOnMax, handsOnPass);
   const flagged = steps.check + steps.unread;
   // The steps are numbered as they show: the activity step is there only when the key takes a score.
   const handsOnStep = handsOnMax != null ? 2 : 0;
@@ -266,6 +267,13 @@ export default function BatchIgniteCard({ batch, test, sheets, me, onBatch }: {
                 {noActivityText(steps.noActivity)} yet. Type the mark each student got for the hands-on activity, out
                 of {fmtScore(handsOnMax)}, in the box beside the student. Submit waits for every one.
               </p>
+            )}
+            {steps.belowPass > 0 && handsOnPass != null && (
+              <Notice tone="warn" className="mt-1">
+                {belowPassText(steps.belowPass)} ({fmtScore(handsOnPass)} of {fmtScore(handsOnMax)}). Only students who
+                score {fmtScore(handsOnPass)} or more write the test. Check {steps.belowPass === 1 ? 'that mark' : 'those marks'}.
+                If a student did not pass, leave the paper out.
+              </Notice>
             )}
           </Step>
         )}

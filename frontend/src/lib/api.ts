@@ -57,6 +57,8 @@ export interface Test { id: string; name: string; question_count: number; option
   skill_map?: Record<string, string>;
   /** IGNITE: the most a student can score in the hands-on activity; null when this key has none. */
   hands_on_max?: number | null;
+  /** IGNITE: the least hands-on score that lets a student write the test (3 of 5); null when none is set. */
+  hands_on_pass?: number | null;
 }
 /** A state (Maharashtra, say) that batches are filed under. Teachers add states as they need them. */
 export interface State { id: string; name: string; created_by: string; created_at: string; }

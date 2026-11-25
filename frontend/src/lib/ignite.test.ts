@@ -1,7 +1,7 @@
 import { parseQuestions, skillMapOf } from '../components/ignite/SkillsEditor';
 import { Batch, Places, Sheet } from './api';
 import {
-  addSchool, blockCompleted, dayText, detailsFromFileName, detailsOf, guessDetails, igniteOn, NO_DETAILS, schoolKey, schoolsText,
+  addSchool, batchSteps, belowPassText, blockCompleted, dayText, detailsFromFileName, detailsOf, guessDetails, igniteOn, NO_DETAILS, schoolKey, schoolsText,
   scoreOf, submitBlocker, suggestionsFor, todayInIndia,
 } from './ignite';
 
@@ -12,7 +12,7 @@ const sheet = (over: Partial<Sheet>): Sheet => ({
 const batch = (over: Partial<Batch>): Batch => ({
   id: 'b', test_id: 't', test_name: 'Key', state_id: 's1', state_name: 'Maharashtra', name: 'Batch', created_by: 'a@b.c',
   created_at: '', finished_at: null, status: 'finished', sheet_count: 0, read_count: 0, review_count: 0, error_count: 0,
-  average_score: null, max_score: null, district: 'Nashik', block: 'Malegaon', ...over,
+  average_score: null, max_score: null, district: 'Nashik', block: 'Malegaon', schools: ['ZPPS Sunderpur'], ...over,
 });
 
 test('the feature is off unless the server says it is on', () => {
@@ -52,7 +52,7 @@ test('a school is added once, however it is spelt', () => {
   expect(schoolsText(['A', 'B'])).toBe('A and B');
   expect(schoolsText(['A', 'B', 'C'])).toBe('3 schools');
   // A batch from before the list has one school.
-  expect(detailsOf(batch({ school: 'Old School' })).schools).toEqual(['Old School']);
+  expect(detailsOf(batch({ school: 'Old School', schools: undefined })).schools).toEqual(['Old School']);
   expect(detailsOf(batch({ school: 'A, B', schools: ['A', 'B'] })).schools).toEqual(['A', 'B']);
 });
 
@@ -81,7 +81,22 @@ test('a batch is submitted only when every sheet is settled and it says where it
     '1 sheet still needs a check and 1 sheet could not be read. Correct them, type them in or leave them out first.');
   expect(submitBlocker(batch({ block: '' }), [sheet({})])).toBe('Add the block of this batch first.');
   expect(submitBlocker(batch({ district: '', block: '' }), [sheet({})])).toBe('Add the district and the block of this batch first.');
+  // The fellows type the school (the call on 25 November): Submit waits for it, as the server does.
+  expect(submitBlocker(batch({ schools: [] }), [sheet({})])).toBe('Add the school of this batch first.');
+  expect(submitBlocker(batch({ schools: undefined, school: 'ZPPS Kesarwadi' }), [sheet({})])).toBe('');
   expect(submitBlocker(batch({}), [sheet({}), sheet({ id: 'o', status: 'error', left_out: true })])).toBe('');
+});
+
+test('an activity score below the pass mark is counted, as a warning only', () => {
+  const papers = [sheet({ hands_on_score: 2 }), sheet({ id: 'c', hands_on_score: 3 }), sheet({ id: 'd', hands_on_score: null }),
+    sheet({ id: 'o', hands_on_score: 1, left_out: true })];
+  expect(batchSteps(batch({}), papers, 5, 3).belowPass).toBe(1);        // 2 is below 3; 3 passes; left out does not count
+  expect(batchSteps(batch({}), papers, 5, null).belowPass).toBe(0);     // no pass mark set
+  expect(batchSteps(batch({}), papers, null, 3).belowPass).toBe(0);     // the key takes no activity score
+  const scored = [sheet({ hands_on_score: 1 }), sheet({ id: 'c', hands_on_score: 4 })];
+  expect(submitBlocker(batch({ students_reached: 30 }), scored, 5)).toBe('');   // it never holds back Submit
+  expect(belowPassText(1)).toBe('1 paper has an activity score below the pass mark');
+  expect(belowPassText(2)).toBe('2 papers have an activity score below the pass mark');
 });
 
 test('days read as dates', () => {

@@ -489,7 +489,7 @@ function BatchResults({ id, me }: { id: string; me: Me }) {
                           <IconChevronRight size={22} className="shrink-0 text-brand lg:hidden" />
                         </button>
                         {handsOnMax !== null && s.status === 'ok' && !s.left_out && (
-                          <HandsOnBox sheet={s} max={handsOnMax} who={sheetTitle(s)} onSaved={sheetSaved} />
+                          <HandsOnBox sheet={s} max={handsOnMax} pass={test.hands_on_pass ?? null} who={sheetTitle(s)} onSaved={sheetSaved} />
                         )}
                       </li>
                     );

@@ -120,10 +120,13 @@ export interface BatchSteps {
   check: number;
   /** Could not be read. */
   unread: number;
-  /** Of 'state', 'district' and 'block': the ones nobody has filled in. */
+  /** Of 'state', 'district', 'block' and 'school': the ones nobody has filled in. */
   missing: string[];
   /** Papers with no activity score yet; always 0 when the answer key takes none. */
   noActivity: number;
+  /** Papers whose activity score is below the pass mark: only students who reach it write the test,
+   *  so each is a mark to check. A warning, never a reason to hold back Submit. 0 with no pass mark. */
+  belowPass: number;
   /** The students in the hands-on challenge: 'missing' (not typed), 'fewer' (fewer than the papers)
    *  or '' (fine, or not asked for: the answer key takes no activity score). */
   reached: '' | 'missing' | 'fewer';
@@ -131,23 +134,32 @@ export interface BatchSteps {
 
 /** handsOnMax: the most an activity score can be on this answer key, or null when it takes none.
  *  With one, every paper needs its activity score and the number of students in the hands-on
- *  challenge is needed too (the team's answers 1 and 10), the same rules as the server's. */
-export function batchSteps(batch: Batch, sheets: Sheet[], handsOnMax: number | null = null): BatchSteps {
+ *  challenge is needed too (the team's answers 1 and 10), the same rules as the server's.
+ *  handsOnPass: the pass mark of the hands-on challenge (3 of 5), or null for none. */
+export function batchSteps(batch: Batch, sheets: Sheet[], handsOnMax: number | null = null,
+  handsOnPass: number | null = null): BatchSteps {
   const kept = keptSheets(sheets);
   const asked = handsOnMax != null;
   const reached = batch.students_reached;
+  const schools = batch.schools ?? (batch.school ? [batch.school] : []);
   return {
     kept: kept.length,
     check: kept.filter(s => s.status === 'ok' && s.needs_review).length,
     unread: kept.filter(s => s.status === 'error').length,
-    missing: [!batch.state_id && 'state', !batch.district && 'district', !batch.block && 'block'].filter(Boolean) as string[],
+    missing: [!batch.state_id && 'state', !batch.district && 'district', !batch.block && 'block',
+      !schools.length && 'school'].filter(Boolean) as string[],
     noActivity: asked ? kept.filter(s => s.hands_on_score == null).length : 0,
+    belowPass: asked && handsOnPass != null ? kept.filter(s => s.hands_on_score != null && s.hands_on_score < handsOnPass).length : 0,
     reached: !asked ? '' : reached == null ? 'missing' : reached < kept.length ? 'fewer' : '',
   };
 }
 
 /** "1 paper has no activity score" / "3 papers have no activity score". */
 export const noActivityText = (n: number) => (n === 1 ? '1 paper has no activity score' : `${n} papers have no activity score`);
+
+/** "1 paper has an activity score below the pass mark" / "2 papers have ...". */
+export const belowPassText = (n: number) =>
+  `${n === 1 ? '1 paper has' : `${n} papers have`} an activity score below the pass mark`;
 
 /** Is a block of the programme marked Completed? The names are compared without case or spaces. */
 export function blockCompleted(places: Places | null, district: string, block: string): boolean {

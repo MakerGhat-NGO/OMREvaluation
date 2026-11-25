@@ -50,7 +50,8 @@ def _open_for_changes(b: Batch) -> None:
 def set_test_ignite(test_id):
     """skill_map says which skill each question tests ({"q1": "Scientific Reasoning", ...});
     hands_on_max is the most a student can score in the hands-on activity, or null when this
-    answer key has no hands-on score."""
+    answer key has no hands-on score; hands_on_pass is the least score that lets a student write
+    the test (3 of 5), or null for none."""
     t = db().get(Test, test_id) or abort(404)
     body = request.get_json(force=True) or {}
     if "skill_map" in body:
@@ -70,6 +71,18 @@ def set_test_ignite(test_id):
             if not 0 < most <= 1000:
                 abort(400, "the hands-on maximum must be more than 0")
             t.hands_on_max = most
+    if "hands_on_pass" in body:
+        if body["hands_on_pass"] in (None, ""):
+            t.hands_on_pass = None
+        else:
+            least = _number(body["hands_on_pass"], "the pass mark")
+            if t.hands_on_max is None:
+                abort(400, "set the hands-on maximum before the pass mark")
+            if not 0 < least <= t.hands_on_max:
+                abort(400, f"the pass mark must be more than 0 and at most {t.hands_on_max:g}")
+            t.hands_on_pass = least
+    if t.hands_on_max is None or (t.hands_on_pass is not None and t.hands_on_pass > t.hands_on_max):
+        t.hands_on_pass = None   # no hands-on score, or a new maximum below the old pass mark
     db().commit()
     return jsonify(t.to_dict())
 
@@ -262,7 +275,8 @@ def _count(n: int, one: str, many: str) -> str:
 def submit_batch(batch_id):
     """The teacher says this batch is checked and complete. Refused while a sheet still needs a
     check or could not be read (each is corrected, typed in or left out first), and while the
-    batch does not say which district and block it is from. With an activity score on the answer
+    batch does not say which district, block and school it is from (the fellows type the schools:
+    the call on 25 November). With an activity score on the answer
     key, also while a paper has no activity score, and until the number of students in the
     hands-on challenge is typed, at least as many as the papers (answers 1 and 10)."""
     b = db().get(Batch, batch_id, options=_BATCH_COUNTS) or abort(404)
@@ -282,8 +296,8 @@ def submit_batch(batch_id):
         if no_score:
             abort(400, _count(no_score, "paper has", "papers have") + " no activity score yet. Type "
                   + ("it" if no_score == 1 else "them") + " first.")
-    missing = [what for what, value in (("state", b.state_id), ("district", b.district), ("block", b.block))
-               if not value]
+    missing = [what for what, value in (("state", b.state_id), ("district", b.district), ("block", b.block),
+                                        ("school", b.schools)) if not value]
     if missing:
         abort(400, "add the " + " and the ".join(missing) + " of this batch first")
     if b.test.hands_on_max:

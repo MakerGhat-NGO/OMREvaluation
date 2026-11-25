@@ -221,7 +221,8 @@ export function useSheetFix(
           </div>
           {test.hands_on_max != null && (
             <label className="field min-w-0">
-              <span>Activity score <span className="field-note">(hands-on activity, out of {fmtScore(test.hands_on_max)})</span></span>
+              <span>Activity score <span className="field-note">(hands-on activity, out of {fmtScore(test.hands_on_max)}
+                {test.hands_on_pass != null && `; pass mark ${fmtScore(test.hands_on_pass)}`})</span></span>
               <input className="input" type="text" inputMode="decimal" maxLength={6} autoComplete="off" value={draft.handsOn}
                 onChange={e => setDraft(d => (d ? { ...d, handsOn: e.target.value } : d))} />
             </label>

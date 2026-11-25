@@ -7,10 +7,12 @@ import { fmtScore } from '../../lib/format';
 
 const asText = (score: number | null | undefined) => (score == null ? '' : String(score));
 
-export default function HandsOnBox({ sheet, max, who, onSaved }: {
+export default function HandsOnBox({ sheet, max, pass = null, who, onSaved }: {
   sheet: Sheet;
   /** The most a student can score. */
   max: number;
+  /** The pass mark of the hands-on challenge (3 of 5), or null for none: a saved score below it is flagged. */
+  pass?: number | null;
   /** The student's name (or file), for screen readers. */
   who: string;
   onSaved: (sheet: Sheet) => void;
@@ -67,6 +69,12 @@ export default function HandsOnBox({ sheet, max, who, onSaved }: {
           }
         }} />
       {problem && <span role="alert" className="text-[12px] leading-4 text-danger">{problem}</span>}
+      {!problem && pass != null && sheet.hands_on_score != null && sheet.hands_on_score < pass && (
+        <span className="rounded bg-sun-wash px-1 text-center text-[12px] font-semibold leading-4 text-sun-ink"
+          title={`Only students who score ${fmtScore(pass)} or more write the test. Check this mark.`}>
+          Below pass mark ({fmtScore(pass)})
+        </span>
+      )}
     </span>
   );
 }

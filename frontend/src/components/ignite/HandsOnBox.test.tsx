@@ -36,3 +36,12 @@ test('the box shows a score saved somewhere else', () => {
   rerender(<HandsOnBox sheet={{ ...sheet, hands_on_score: 3 }} max={5} who="Asha Patil" onSaved={() => undefined} />);
   expect(screen.getByLabelText('Hands-on score of Asha Patil, out of 5')).toHaveValue('3');
 });
+
+test('a saved score below the pass mark is flagged, and one at the pass mark is not', () => {
+  const { rerender } = render(<HandsOnBox sheet={{ ...sheet, hands_on_score: 2 }} max={5} pass={3} who="Asha Patil" onSaved={() => undefined} />);
+  expect(screen.getByText('Below pass mark (3)')).toBeInTheDocument();
+  rerender(<HandsOnBox sheet={{ ...sheet, hands_on_score: 3 }} max={5} pass={3} who="Asha Patil" onSaved={() => undefined} />);
+  expect(screen.queryByText('Below pass mark (3)')).not.toBeInTheDocument();
+  rerender(<HandsOnBox sheet={{ ...sheet, hands_on_score: 2 }} max={5} who="Asha Patil" onSaved={() => undefined} />);
+  expect(screen.queryByText(/Below pass mark/)).not.toBeInTheDocument();
+});
